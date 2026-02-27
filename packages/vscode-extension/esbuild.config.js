@@ -79,4 +79,25 @@ const skillsCliBuild = fs.existsSync(finalSkillsCliEntry) ? esbuild.build({
     }
 }) : Promise.resolve();
 
-Promise.all([extensionBuild, skillsCliBuild]).catch(() => process.exit(1));
+// Build configuration for n8nac CLI (Portable version for VS Code)
+const n8nacCliEntry = path.join(__dirname, 'node_modules', '@n8n-as-code', 'cli', 'dist', 'index.js');
+const fallbackN8nacCliEntry = path.join(__dirname, '..', 'cli', 'dist', 'index.js');
+const finalN8nacCliEntry = fs.existsSync(n8nacCliEntry) ? n8nacCliEntry : fallbackN8nacCliEntry;
+
+if (!fs.existsSync(finalN8nacCliEntry)) {
+    console.warn('⚠️  n8nac entry point not found, skipping CLI bundle');
+}
+
+const n8nacCliBuild = fs.existsSync(finalN8nacCliEntry) ? esbuild.build({
+    entryPoints: [finalN8nacCliEntry],
+    bundle: true,
+    outfile: 'out/cli/index.js',
+    external: ['vscode', 'prettier'],
+    format: 'cjs',
+    platform: 'node',
+    logOverride: {
+        'empty-import-meta': 'silent'
+    }
+}) : Promise.resolve();
+
+Promise.all([extensionBuild, skillsCliBuild, n8nacCliBuild]).catch(() => process.exit(1));
