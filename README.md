@@ -28,7 +28,7 @@ Choose your interface:
 1. Install from [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=etienne-lescot.n8n-as-code)
 2. Click the **n8n** icon in the Activity Bar
 3. Configure your instance (Host + API Key)
-4. Start editing your workflows visually!
+4. Start editing your workflows!
 
 📖 [Full extension documentation](https://etiennelescot.github.io/n8n-as-code/docs/usage/vscode-extension)
 
