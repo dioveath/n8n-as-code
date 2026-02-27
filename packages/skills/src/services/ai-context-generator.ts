@@ -517,6 +517,8 @@ EXIT /B 1
       ``,
       `## 📚 Available Tools`,
       ``,
+      `> **💡 Tip**: Examples below use \`./n8nac-skills\` and \`./n8nac\` (local shims). If a command is not found, try without the \`./\` prefix: \`n8nac-skills\` / \`n8nac\` (global install or PATH-based resolution).`,
+      ``,
       `### 🔍 Unified Search (PRIMARY TOOL)`,
       `\`\`\`bash`,
       `./n8nac-skills search "google sheets"`,
