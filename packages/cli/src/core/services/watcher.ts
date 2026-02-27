@@ -908,6 +908,12 @@ export class Watcher extends EventEmitter {
             // remoteModified && localUnchanged: remote updated but local is untouched.
             // Remote updated but local untouched — treat as TRACKED, user can pull explicitly.
             if (remoteModified && localHash === lastSyncedHash) return WorkflowSyncStatus.TRACKED;
+            // localUnchanged && remoteHash unknown (not yet fetched by this watcher instance):
+            // local matches last synced state — safe to report TRACKED.
+            // This prevents a spurious CONFLICT when an external process (CLI, another SyncManager
+            // instance) pulls a workflow and writes lastSyncedHash to state while this watcher has
+            // never fetched the remote hash for the workflow (remoteHashes cache is empty here).
+            if (!localModified) return WorkflowSyncStatus.TRACKED;
         }
 
         // Fallback for edge cases
