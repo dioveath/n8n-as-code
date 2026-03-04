@@ -35,32 +35,18 @@ Choose your interface:
 
 ### 🖥️ **Option 2: CLI** (Command-line interface)
 
+No installation needed — run directly with npx:
+
 ```bash
-# install globally
-npm install -g @n8n-as-code/cli
-npm install -g @n8n-as-code/skills
-# install locally as dev dependency
-npm install --save-dev @n8n-as-code/cli
-npm install --save-dev @n8n-as-code/skills
+npx n8nac init                            # Configure your n8n instance
+npx n8nac list                            # See all workflows and their sync status
+npx n8nac fetch --all                     # Update remote state cache
+npx n8nac pull <workflowId>               # Pull remote changes locally
+npx n8nac push <workflowId>               # Push local changes to n8n
+npx n8nac resolve <id> --mode keep-current  # Explicit conflict resolution
 ```
 
-# Configuration
-n8nac init
-
-# Switch project (optional)
-n8nac switch
-
-# Git-like sync workflow
-n8nac list                               # See all workflows and their status (local & remote)
-n8nac list --local                       # List only local files
-n8nac list --remote                      # List only remote state from cache
-n8nac fetch <workflowId>   # Update remote state for a workflow
-n8nac fetch --all                        # Update remote state for all workflows
-n8nac pull <workflowId>    # Pull remote changes (use --mode keep-incoming in conflict)
-n8nac push <workflowId>    # Push local changes — use when workflow already has an ID
-n8nac push --filename <file>  # Push a brand-new local file that has never been pushed
-n8nac resolve <id> --mode keep-current # Explicit conflict resolution
-```
+> **Optional global install:** `npm install -g n8nac` — then use `n8nac` directly without `npx`.
 
 📖 [Full CLI documentation](https://etiennelescot.github.io/n8n-as-code/docs/usage/cli)
 
@@ -172,7 +158,7 @@ n8nac pull --format typescript
 | Use Case | Quick Command | Learn More |
 |----------|---------------|------------|
 | **Sync workflows** | `n8nac list` → `fetch` → `pull`/`push` | [Usage Guide](https://etiennelescot.github.io/n8n-as-code/docs/usage/cli) |
-| **AI workflow creation** | `n8nac-skills search "google sheets"` | [Skills CLI Guide](https://etiennelescot.github.io/n8n-as-code/docs/usage/skills) |
+| **AI workflow creation** | `n8nac skills search "google sheets"` | [Skills CLI Guide](https://etiennelescot.github.io/n8n-as-code/docs/usage/skills) |
 | **Visual editing** | Install [VS Code Extension](https://marketplace.visualstudio.com/items?itemName=etienne-lescot.n8n-as-code) | [Extension Guide](https://etiennelescot.github.io/n8n-as-code/docs/usage/vscode-extension) |
 | **Version control** | Git commit workflow JSON files | [Getting Started](https://etiennelescot.github.io/n8n-as-code/docs/getting-started) |
 

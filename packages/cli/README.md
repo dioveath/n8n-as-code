@@ -6,6 +6,14 @@ The main command-line interface for the **n8n-as-code** ecosystem. Manage, synch
 
 ## Installation
 
+No installation required — run directly with npx:
+
+```bash
+npx n8nac <command>
+```
+
+Or install globally if you prefer:
+
 ```bash
 npm install -g n8nac
 ```
