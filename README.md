@@ -56,7 +56,7 @@ It gives your agent a guided onboarding flow, a persistent runtime, and the clea
 <code>yagr onboard</code><br>
 <code>yagr start</code>
 
-[Yagr docs](https://yagr.dev) · [Yagr repository](https://github.com/EtienneLescot/yagr)
+[Yagr repository](https://github.com/EtienneLescot/yagr)
 
 </td>
 </tr>
