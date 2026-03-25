@@ -12,6 +12,7 @@
     "plugins/openclaw/n8n-as-code"
   ],
   "scripts": {
+    "prepare": "npx lefthook install",
     "sync:brand-assets": "node scripts/sync-brand-assets.mjs",
     "build": "npm run sync:brand-assets && npm run generate:nodes && tsc -b --force && npm run build --workspace=packages/skills --workspace=packages/cli --workspace=packages/vscode-extension --workspace=plugins/openclaw/n8n-as-code",
     "build:cli": "cd packages/cli && npm run build",
@@ -48,6 +49,7 @@
     "open": "^8.4.2"
   },
   "devDependencies": {
+    "lefthook": "^2.1.4",
     "typedoc": "^0.28.16",
     "typescript": "^5.3.3"
   }
