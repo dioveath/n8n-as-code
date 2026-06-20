@@ -20,19 +20,9 @@ export {
     type IManagedEnvironmentTarget,
     type IExternalEnvironmentTarget,
     type IEnvironmentTarget,
+    type IWorkspaceNativeMcpConfig,
+    type IWorkspaceNativeMcpMode,
     type IWorkspaceEnvironment,
     type IPersistedWorkspaceConfigV4,
     type IResolvedWorkspaceEnvironment,
-    type IWorkspaceMigrationPlan,
-    type IWorkspaceMigrationResult,
-    type IWorkspaceMigrationOptions,
-    type IWorkspaceMigrationReport,
-    type IWorkspaceMigrationReportOperation,
-    type IWorkspaceMigrationReportInstance,
 } from './services/config-service.js';
-export {
-    WorkspaceMigrationFacade,
-    type IWorkspaceMigrationFacadeOptions,
-    type IWorkspaceMigrationFacadeRunOptions,
-    type WorkspaceMigrationLegacySettings,
-} from './services/workspace-migration-facade.js';

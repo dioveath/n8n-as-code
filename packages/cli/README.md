@@ -35,17 +35,16 @@ Full documentation: [CLI guide](https://n8nascode.dev/docs/usage/cli/) · [n8n-m
 
 | Group | Command | Purpose |
 |---|---|---|
-| Primary Usage | `n8nac env` | Workspace environments: remote n8n URL or local managed instance, project, sync folder, active environment |
-| Workspace Maintenance | `n8nac workspace` | Readiness and unified workspace migration |
+| Primary Usage | `n8nac env` | Workspace environments: remote n8n URL or local managed instance, project, workflowsPath, active environment |
+| Workspace Inspection | `n8nac workspace` | V4 workspace snapshot |
 | Managed Local Instances | `n8n-manager` | Local managed instances, Docker lifecycle, tunnels, local secrets |
-| Hidden Compatibility | `instance-target`, `target`, `setup`, old `workspace` mutations | Compatibility only |
 
 ## Workspace Environments
 
 Create a remote n8n environment for an existing n8n URL:
 
 ```bash
-n8nac env add Dev --base-url https://n8n.example.com --sync-folder workflows/dev
+n8nac env add Dev --base-url https://n8n.example.com --workflows-path workflows/dev
 printf '%s' "$N8N_API_KEY" | n8nac env auth set Dev --api-key-stdin
 n8nac env use Dev
 ```
@@ -54,7 +53,7 @@ Attach a workspace environment to a local managed instance:
 
 ```bash
 n8n-manager instance list
-n8nac env add Local --managed-instance <id> --sync-folder workflows/local
+n8nac env add Local --managed-instance <id> --workflows-path workflows/local
 n8nac env use Local
 ```
 
@@ -74,18 +73,14 @@ n8nac env remove Dev
 
 Removing a workspace environment does not delete remote workflows, local workflow files, or local managed instances.
 
-## Workspace Migration
-
-Inspect and apply required workspace migrations explicitly:
+## Readiness
 
 ```bash
-n8nac workspace migrate --json
-n8nac workspace migrate --write
-n8nac workspace migrate --json
 n8nac env status --json
+n8nac workspace status --json
 ```
 
-Dry-run with `--json` first, then apply with `--write` after reviewing the unified `operations` list. Applied migrations create a backup before replacing `n8nac-config.json`.
+Use `env status --json` as the source of truth for active environment readiness.
 
 ## Sync Commands
 
@@ -93,11 +88,39 @@ Dry-run with `--json` first, then apply with `--write` after reviewing the unifi
 n8nac list
 n8nac pull <workflow-id>
 n8nac push workflows/dev/my-workflow.workflow.ts --verify
+n8nac promote workflows/dev/my-workflow.workflow.ts --from Dev --to Prod --dry-run
+n8nac promote --from Dev --to Prod --dry-run
 n8nac resolve <workflow-id> --mode keep-current
 n8nac resolve <workflow-id> --mode keep-incoming
 ```
 
 Sync is Git-like and explicit. `pull` and `push` block on conflicts instead of silently overwriting work.
+
+### Promote Between Environments
+
+```bash
+n8nac promote workflows/dev/my-workflow.workflow.ts --from Dev --to Prod
+n8nac promote --from Dev --to Prod --dry-run
+n8nac promote --from Dev --to Prod --no-push
+```
+
+`promote` copies TypeScript workflows from one workspace environment to another. When a path is provided, it promotes that single workflow. When the path is omitted, it recursively promotes all `*.workflow.ts` files in the source environment `workflowsPath` and preserves their relative paths in the target environment.
+
+During promotion, `n8nac` rewrites target project metadata, strips source workflow identity for new target workflows, reuses known target workflow IDs for updates, remaps credential IDs by binding, override, or target inventory lookup, and remaps supported Execute Workflow references.
+
+Promotion stores stable source-to-target workflow and credential bindings in `n8nac-promotion.json` by default. Use `--promotion-config <path>` to choose a different file. `--dry-run` inspects the target environment so the plan can report create vs update accurately, but it does not write workflow files, push to n8n, or update the promotion config.
+
+Useful flags:
+
+| Flag | Effect |
+|---|---|
+| `--dry-run` | Show the planned promotion without writing files, pushing, or saving bindings |
+| `--no-push` | Write adapted target files locally without pushing them to n8n |
+| `--overwrite` | Allow replacing an existing local target file when no target workflow ID is known |
+| `--promotion-config <path>` | Read and write promotion bindings from a custom config path |
+| `--json` | Print the promotion result as JSON |
+
+Missing or ambiguous credentials and workflow references block promotion before push. After a pushed single-workflow promotion, the CLI prints a `workflow credential-required` command to check target credential readiness.
 
 ## Workflow Helpers
 
@@ -155,7 +178,7 @@ Current workspace config is environment-based:
       "environmentTargetId": "dev",
       "projectId": "personal",
       "projectName": "Personal",
-      "syncFolder": "workflows/dev"
+      "workflowsPath": "workflows/dev"
     }
   ],
   "environmentTargets": [
@@ -170,21 +193,6 @@ Current workspace config is environment-based:
 ```
 
 In config examples, `kind: "external-instance"` is the persisted target kind for a remote n8n URL. Do not store API keys in this file. Use `n8nac env auth set <env> --api-key-stdin` for remote n8n environments.
-
-## Compatibility Commands
-
-These commands may still be callable for old workspaces or scripts, but they are not the primary CLI surface:
-
-```bash
-n8nac instance-target ...
-n8nac target ...
-n8nac setup ...
-n8nac setup-modes ...
-n8nac workspace pin-instance ...
-n8nac workspace set-sync-folder ...
-```
-
-Prefer `n8nac env` for all new workspace configuration.
 
 ## License
 

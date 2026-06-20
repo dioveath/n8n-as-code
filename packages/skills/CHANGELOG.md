@@ -1,5 +1,77 @@
 # @n8n-as-code/skills
 
+## [2.3.0](https://github.com/EtienneLescot/n8n-as-code/compare/@n8n-as-code/skills@v2.2.6...@n8n-as-code/skills@v2.3.0) (2026-06-09)
+
+### Features
+
+* **vscode:** discover native MCP tools dynamically ([57c9c03](https://github.com/EtienneLescot/n8n-as-code/commit/57c9c03c43f8501ab2e0b1753d79db9f41e61a0d))
+* **mcp:** scope native assist config to environments ([f51a532](https://github.com/EtienneLescot/n8n-as-code/commit/f51a5326dfc2d905292dc685cc32b13dd4aa64fd))
+* **mcp:** add optional native n8n MCP assist ([e1d32e4](https://github.com/EtienneLescot/n8n-as-code/commit/e1d32e451145b8d42c345fe03710c91c5e9eea41))
+
+### Bug Fixes
+
+* **mcp:** gate native assist exposure ([1252b6b](https://github.com/EtienneLescot/n8n-as-code/commit/1252b6bb2f76e1ce58ea2d64b3748a930f0c1618))
+
+### Documentation
+
+* **mcp:** clarify native execution strategy ([21a86a8](https://github.com/EtienneLescot/n8n-as-code/commit/21a86a87862e3ccdb81c9c65c3e7c424bea019ec))
+
+## [2.2.6](https://github.com/EtienneLescot/n8n-as-code/compare/@n8n-as-code/skills@v2.2.5...@n8n-as-code/skills@v2.2.6) (2026-06-05)
+
+### Bug Fixes
+
+* require v4 workspace environments ([6967d4d](https://github.com/EtienneLescot/n8n-as-code/commit/6967d4d0ecbaa4d18fe0077f42531b215f574d5e))
+
+## [2.2.5](https://github.com/EtienneLescot/n8n-as-code/compare/@n8n-as-code/skills@v2.2.4...@n8n-as-code/skills@v2.2.5) (2026-06-04)
+
+### Bug Fixes
+
+* **skills:** update knowledge base for n8n@2.23.2 ([d543867](https://github.com/EtienneLescot/n8n-as-code/commit/d543867749726a01d789bd49a9926e00de55f796))
+
+## [2.2.4](https://github.com/EtienneLescot/n8n-as-code/compare/@n8n-as-code/skills@v2.2.3...@n8n-as-code/skills@v2.2.4) (2026-06-02)
+
+### Bug Fixes
+
+* **skills:** update knowledge base for n8n@2.22.6 ([1325ec5](https://github.com/EtienneLescot/n8n-as-code/commit/1325ec5ed25e32400d29ae0a39e629bb331e5b8a))
+
+## [2.2.3](https://github.com/EtienneLescot/n8n-as-code/compare/@n8n-as-code/skills@v2.2.2...@n8n-as-code/skills@v2.2.3) (2026-05-29)
+
+### Bug Fixes
+
+* **skills:** update knowledge base for n8n@2.22.5 ([0bcdc1f](https://github.com/EtienneLescot/n8n-as-code/commit/0bcdc1fbc6013b61a8e934abf9cfd2b81bfabc55))
+* **skills:** update knowledge base for n8n@2.22.4 ([49a8659](https://github.com/EtienneLescot/n8n-as-code/commit/49a865980279894192ead095035794db5a14072a))
+
+## [2.2.2](https://github.com/EtienneLescot/n8n-as-code/compare/@n8n-as-code/skills@v2.2.1...@n8n-as-code/skills@v2.2.2) (2026-05-22)
+
+### Bug Fixes
+
+* **release:** add retry logic for Open VSX publishing ([18a9901](https://github.com/EtienneLescot/n8n-as-code/commit/18a990181f49dd7fda6cde9e4cdbd10f43635511))
+
+## [2.2.1](https://github.com/EtienneLescot/n8n-as-code/compare/@n8n-as-code/skills@v2.2.0...@n8n-as-code/skills@v2.2.1) (2026-05-21)
+
+### Bug Fixes
+
+* **release:** keep vscode stable versions ahead of prereleases ([550cc14](https://github.com/EtienneLescot/n8n-as-code/commit/550cc1464e4d9a3f6bc6c2a5906e0f83d74d9822))
+* address codex and coderabbit review comments, restore cache package builds ([5b13361](https://github.com/EtienneLescot/n8n-as-code/commit/5b13361a0a0d3bf9b53f7df2033f212af40b487d))
+* **telemetry:** update posthog endpoints and implement detached exit flusher ([33f8c00](https://github.com/EtienneLescot/n8n-as-code/commit/33f8c006404dfcdf84f81c7ad93c3176cb6bb95e))
+
+### Dependencies
+
+* The following workspace dependencies were updated
+    * @n8n-as-code/telemetry bumped from 2.0.0 to 2.0.1
+
+## [2.2.0](https://github.com/EtienneLescot/n8n-as-code/compare/@n8n-as-code/skills@v2.1.3...@n8n-as-code/skills@v2.2.0) (2026-05-21)
+
+### Features
+
+* **vscode-extension:** improve workflow context management and asset resolution ([07a289f](https://github.com/EtienneLescot/n8n-as-code/commit/07a289f5cf2eb40e8e2192d3f21b436eff291e3d))
+
+### Bug Fixes
+
+* **skills:** update knowledge base for n8n@2.21.5 ([3144f02](https://github.com/EtienneLescot/n8n-as-code/commit/3144f027f7c9af87ac3c832f9b3587c47d445c1e))
+* **skills:** update knowledge base for n8n@2.21.4 ([3274412](https://github.com/EtienneLescot/n8n-as-code/commit/3274412a86dbd9047a9890f744506c9e48958f73))
+* **skills:** update knowledge base for n8n@2.20.9 ([e86c39f](https://github.com/EtienneLescot/n8n-as-code/commit/e86c39fa20aae6ad3d27165df4869d4011b4295c))
+
 ## [2.1.3](https://github.com/EtienneLescot/n8n-as-code/compare/@n8n-as-code/skills@v2.1.2...@n8n-as-code/skills@v2.1.3) (2026-05-13)
 
 ### Bug Fixes

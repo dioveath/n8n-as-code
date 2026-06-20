@@ -1,13 +1,26 @@
 import * as http from 'http';
 import * as os from 'os';
-import httpProxy = require('http-proxy');
-import * as vscode from 'vscode';
+import HttpProxy from 'http-proxy';
+import type HttpProxyServer = require('http-proxy');
+import type * as vscode from 'vscode';
 import { AddressInfo } from 'net';
+import { randomUUID } from 'crypto';
 import { WebSocket, WebSocketServer } from 'ws';
+import { openExternalNavigation } from '../utils/external-navigation.js';
+
+type ExternalAuthRequest = {
+    token: string;
+    targetUrl: string;
+};
+
+type ExternalAuthSession = {
+    expiresAt: number;
+    expectedTargetUrl: string;
+};
 
 export class ProxyService {
     private server: http.Server | undefined;
-    private proxy: httpProxy | undefined;
+    private proxy: HttpProxyServer | undefined;
     private wsServer: WebSocketServer | undefined;
     private port: number = 0;
     private target: string = '';
@@ -17,6 +30,11 @@ export class ProxyService {
 
     private cookieJar = new Map<string, string>();
     private htmlRoutes = new Map<string, string>();
+    private externalAuthSessions = new Map<string, ExternalAuthSession>();
+    private lastWorkflowProxyUrl: string | undefined;
+
+    private readonly externalAuthRoutePrefix = '/__n8nac-external-auth/';
+    private readonly externalAuthSessionTtlMs = 15 * 60 * 1000;
 
     constructor() { }
 
@@ -41,21 +59,34 @@ export class ProxyService {
         return this.publicBaseUrl || `http://localhost:${this.port}`;
     }
 
-    private rewriteProxyLocation(location: string): string {
+    private rewriteProxyLocation(location: string, sourceUrl = this.target, externalAuthToken?: string): string {
         const proxyBaseUrl = this.getProxyBaseUrl();
         try {
             const targetUrl = new URL(this.target);
             const targetBasePath = this.trimTrailingSlash(targetUrl.pathname);
+            const sourceBaseUrl = new URL(sourceUrl || this.target);
 
             if (location.startsWith('/') && !location.startsWith('//')) {
-                const locationUrl = new URL(location, targetUrl.origin);
+                const locationUrl = new URL(location, sourceBaseUrl.origin);
+                if (locationUrl.origin !== targetUrl.origin) {
+                    return externalAuthToken ? this.buildExternalAuthProxyUrl(locationUrl.toString(), externalAuthToken) : location;
+                }
+                if (externalAuthToken) {
+                    this.externalAuthSessions.delete(externalAuthToken);
+                }
                 const remainingPath = this.stripTargetBasePath(locationUrl.pathname, targetBasePath);
                 return `${proxyBaseUrl}${remainingPath}${locationUrl.search}${locationUrl.hash}`;
             }
 
-            const locationUrl = new URL(location);
+            const locationUrl = location.startsWith('//')
+                ? new URL(`${sourceBaseUrl.protocol}${location}`)
+                : new URL(location);
             if (locationUrl.origin !== targetUrl.origin) {
-                return location;
+                return externalAuthToken ? this.buildExternalAuthProxyUrl(locationUrl.toString(), externalAuthToken) : location;
+            }
+
+            if (externalAuthToken) {
+                this.externalAuthSessions.delete(externalAuthToken);
             }
 
             if (!this.urlPathMatchesBase(locationUrl.pathname, targetBasePath)) {
@@ -108,6 +139,14 @@ export class ProxyService {
         }
     }
 
+    private async openExternalUrl(url: string): Promise<void> {
+        await openExternalNavigation({
+            url,
+            reason: 'oauth',
+            source: { panelKind: 'proxy' },
+        }, { outputChannel: this.outputChannel, logPrefix: '[Proxy]' });
+    }
+
     private getStorageKey(): string {
         // Use a base64 encoded version of the target URL to avoid issues with special characters in keys
         return `n8n-cookies-${Buffer.from(this.target).toString('base64')}`;
@@ -124,6 +163,196 @@ export class ProxyService {
             hash = hash & hash; // Convert to 32bit integer
         }
         return 10000 + (Math.abs(hash) % 50000);
+    }
+
+    private cleanupExternalAuthSessions(): void {
+        const now = Date.now();
+        for (const [token, session] of this.externalAuthSessions) {
+            if (session.expiresAt <= now) {
+                this.externalAuthSessions.delete(token);
+            }
+        }
+    }
+
+    private createExternalAuthSession(expectedTargetUrl: string): string {
+        this.cleanupExternalAuthSessions();
+        const token = randomUUID();
+        this.externalAuthSessions.set(token, {
+            expiresAt: Date.now() + this.externalAuthSessionTtlMs,
+            expectedTargetUrl: this.normalizeExternalAuthTargetUrl(expectedTargetUrl),
+        });
+        return token;
+    }
+
+    private getExternalAuthSession(token: string): ExternalAuthSession | undefined {
+        this.cleanupExternalAuthSessions();
+        return token ? this.externalAuthSessions.get(token) : undefined;
+    }
+
+    private normalizeExternalAuthTargetUrl(targetUrl: string): string {
+        return new URL(targetUrl).toString();
+    }
+
+    private buildExternalAuthProxyUrl(targetUrl: string, token?: string): string {
+        const normalizedTargetUrl = this.normalizeExternalAuthTargetUrl(targetUrl);
+        const sessionToken = token || this.createExternalAuthSession(normalizedTargetUrl);
+        const session = this.getExternalAuthSession(sessionToken);
+        if (session) {
+            session.expectedTargetUrl = normalizedTargetUrl;
+        }
+        return `${this.getProxyBaseUrl()}${this.externalAuthRoutePrefix}${encodeURIComponent(sessionToken)}?url=${encodeURIComponent(normalizedTargetUrl)}`;
+    }
+
+    private parseExternalAuthProxyRequest(requestUrl?: string): ExternalAuthRequest | undefined {
+        try {
+            const url = new URL(requestUrl ?? '/', `http://localhost:${this.port || 0}`);
+            if (!url.pathname.startsWith(this.externalAuthRoutePrefix)) {
+                return undefined;
+            }
+
+            const token = decodeURIComponent(url.pathname.slice(this.externalAuthRoutePrefix.length));
+            const targetUrl = url.searchParams.get('url') || '';
+            const session = this.getExternalAuthSession(token);
+            if (!session) {
+                return undefined;
+            }
+
+            const parsedTargetUrl = new URL(targetUrl);
+            if (!['http:', 'https:'].includes(parsedTargetUrl.protocol)) {
+                return undefined;
+            }
+            const normalizedTargetUrl = parsedTargetUrl.toString();
+            if (normalizedTargetUrl !== session.expectedTargetUrl) {
+                return undefined;
+            }
+
+            return { token, targetUrl: normalizedTargetUrl };
+        } catch {
+            return undefined;
+        }
+    }
+
+    private isExternalN8nRedirect(location: string): boolean {
+        try {
+            const targetUrl = new URL(this.target);
+            const locationUrl = new URL(location, targetUrl.origin);
+            return locationUrl.origin !== targetUrl.origin;
+        } catch {
+            return false;
+        }
+    }
+
+    private createExternalAuthHandoff(location: string, returnUrl: string): { authProxyUrl: string; html: string } | undefined {
+        if (!this.isExternalN8nRedirect(location)) {
+            return undefined;
+        }
+
+        const targetUrl = new URL(location, new URL(this.target).origin).toString();
+        const authProxyUrl = this.buildExternalAuthProxyUrl(targetUrl);
+        return {
+            authProxyUrl,
+            html: this.buildExternalAuthHandoffHtml(authProxyUrl, returnUrl),
+        };
+    }
+
+    private buildProxyRequestUrl(requestUrl?: string): string {
+        const path = requestUrl && requestUrl.startsWith('/') ? requestUrl : `/${requestUrl || ''}`;
+        return `${this.getProxyBaseUrl()}${path}`;
+    }
+
+    private rememberWorkflowProxyUrl(requestUrl?: string): void {
+        try {
+            const url = new URL(requestUrl ?? '/', `http://localhost:${this.port || 0}`);
+            if (url.pathname.startsWith('/workflow/')) {
+                this.lastWorkflowProxyUrl = this.buildProxyRequestUrl(`${url.pathname}${url.search}`);
+            }
+        } catch {
+            // ignore malformed request URLs
+        }
+    }
+
+    private getWorkflowRetryUrl(req: http.IncomingMessage): string {
+        const referrer = typeof req.headers.referer === 'string' ? req.headers.referer : undefined;
+        const proxyBaseUrl = new URL(this.getProxyBaseUrl());
+        if (referrer) {
+            try {
+                const referrerUrl = new URL(referrer);
+                const proxyBasePath = this.trimTrailingSlash(proxyBaseUrl.pathname);
+                const referrerPath = proxyBasePath && referrerUrl.pathname.startsWith(`${proxyBasePath}/`)
+                    ? referrerUrl.pathname.slice(proxyBasePath.length)
+                    : referrerUrl.pathname;
+                if (referrerUrl.origin === proxyBaseUrl.origin && referrerPath.startsWith('/workflow/')) {
+                    return referrerUrl.toString();
+                }
+            } catch {
+                // ignore malformed referrers
+            }
+        }
+
+        return this.lastWorkflowProxyUrl || this.buildProxyRequestUrl(req.url);
+    }
+
+    private buildExternalAuthHandoffHtml(authProxyUrl: string, returnUrl: string): string {
+        const htmlSafe = (value: string) => value
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+        const authUrlHtml = htmlSafe(authProxyUrl);
+        const returnUrlHtml = htmlSafe(returnUrl);
+        return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>n8n sign-in</title>
+  <style>
+    html, body { margin: 0; min-height: 100%; background: #1e1e1e; color: #f3f3f3; font-family: system-ui, -apple-system, sans-serif; }
+    body { display: grid; place-items: center; padding: 24px; box-sizing: border-box; }
+    main { max-width: 520px; text-align: center; }
+    h1 { font-size: 20px; line-height: 1.35; margin: 0 0 12px; font-weight: 600; }
+    p { margin: 0 0 20px; color: #c8c8c8; line-height: 1.5; }
+    a { color: #ffffff; }
+    .actions { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+    .button { display: inline-flex; align-items: center; justify-content: center; min-height: 34px; padding: 0 14px; border-radius: 4px; background: #0e639c; color: #fff; text-decoration: none; font-size: 13px; }
+    .secondary { background: #3c3c3c; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Continue n8n sign-in in your browser</h1>
+    <p>Your SSO provider needs to run outside the embedded workflow view. After sign-in completes, return here and retry the workflow.</p>
+    <div class="actions">
+      <a class="button" href="${authUrlHtml}" target="_blank" rel="noreferrer">Open browser sign-in</a>
+      <a class="button secondary" href="${returnUrlHtml}">Retry workflow</a>
+    </div>
+  </main>
+</body>
+</html>`;
+    }
+
+    private handleExternalAuthProxyRequest(req: http.IncomingMessage, res: http.ServerResponse): boolean {
+        const authRequest = this.parseExternalAuthProxyRequest(req.url);
+        if (!authRequest || !this.proxy) {
+            return false;
+        }
+
+        const targetUrl = new URL(authRequest.targetUrl);
+        (req as http.IncomingMessage & { __n8nacExternalAuth?: ExternalAuthRequest }).__n8nacExternalAuth = authRequest;
+        req.url = `${targetUrl.pathname}${targetUrl.search}`;
+        delete req.headers['accept-encoding'];
+        req.headers['host'] = targetUrl.host;
+        req.headers['origin'] = targetUrl.origin;
+        res.setHeader('access-control-allow-origin', '*');
+        res.setHeader('access-control-allow-credentials', 'true');
+
+        this.proxy.web(req, res, {
+            target: targetUrl.origin,
+            changeOrigin: true,
+            secure: false,
+            buffer: undefined,
+        });
+        return true;
     }
 
     private async saveCookies() {
@@ -182,6 +411,8 @@ export class ProxyService {
         // Reset state
         this.cookieJar.clear();
         this.htmlRoutes.clear();
+        this.externalAuthSessions.clear();
+        this.lastWorkflowProxyUrl = undefined;
         this.setPublicBaseUrl(undefined);
         this.target = normalizedTarget;
         this.port = stablePort;
@@ -191,7 +422,7 @@ export class ProxyService {
         // Load persisted cookies
         await this.loadCookies();
 
-        this.proxy = httpProxy.createProxyServer({
+        this.proxy = HttpProxy.createProxyServer({
             target: this.target,
             changeOrigin: true,
             secure: false,
@@ -204,7 +435,8 @@ export class ProxyService {
         });
 
         // Strip headers that block iframe embedding and manage cookies
-        this.proxy.on('proxyRes', (proxyRes, _req, res) => {
+        this.proxy.on('proxyRes', (proxyRes, req, res) => {
+            const externalAuth = (req as http.IncomingMessage & { __n8nacExternalAuth?: ExternalAuthRequest }).__n8nacExternalAuth;
             // Remove headers that prevent iframe embedding
             delete proxyRes.headers['x-frame-options'];
             delete proxyRes.headers['content-security-policy'];
@@ -217,7 +449,28 @@ export class ProxyService {
 
             // Rewrite Location header for redirects
             if (proxyRes.headers['location']) {
-                proxyRes.headers['location'] = this.rewriteProxyLocation(proxyRes.headers['location']);
+                const location = proxyRes.headers['location'];
+                const isRedirect = (proxyRes.statusCode || 0) >= 300 && (proxyRes.statusCode || 0) < 400;
+                if (!externalAuth && isRedirect && this.isExternalN8nRedirect(location)) {
+                    const returnUrl = this.getWorkflowRetryUrl(req);
+                    const handoff = this.createExternalAuthHandoff(location, returnUrl);
+                    if (handoff) {
+                        const httpRes = res as http.ServerResponse;
+                        void this.openExternalUrl(handoff.authProxyUrl);
+                        proxyRes.resume();
+                        httpRes.writeHead(200, {
+                            'content-type': 'text/html; charset=utf-8',
+                            'cache-control': 'no-store',
+                        });
+                        httpRes.end(handoff.html);
+                        return;
+                    }
+                }
+                proxyRes.headers['location'] = this.rewriteProxyLocation(
+                    location,
+                    externalAuth?.targetUrl ?? this.target,
+                    externalAuth?.token,
+                );
             }
 
             // CRITICAL: Capture and Fix cookies for iframe/webview context
@@ -225,7 +478,7 @@ export class ProxyService {
                 proxyRes.headers['set-cookie'] = proxyRes.headers['set-cookie'].map(cookie => {
                     const eqIdx = cookie.indexOf('=');
                     const scIdx = cookie.indexOf(';');
-                    if (eqIdx !== -1) {
+                    if (!externalAuth && eqIdx !== -1) {
                         const key = cookie.substring(0, eqIdx).trim();
                         const valuePart = cookie.substring(0, scIdx !== -1 ? scIdx : undefined).trim();
                         this.cookieJar.set(key, valuePart);
@@ -262,7 +515,9 @@ export class ProxyService {
                         const charsetMatch = contentType.match(/charset=([^\s;]+)/i);
                         const charset = (charsetMatch?.[1] || 'utf-8') as BufferEncoding;
                         let html = raw.toString(charset);
-                        html = this.injectClipboardBridge(html, isMacOS);
+                        if (!externalAuth) {
+                            html = this.injectClipboardBridge(html, isMacOS);
+                        }
                         const encoded = Buffer.from(html, charset);
                         delete proxyRes.headers['content-length'];
                         delete proxyRes.headers['content-encoding'];
@@ -294,6 +549,10 @@ export class ProxyService {
         });
 
         this.server = http.createServer((req, res) => {
+            if (this.handleExternalAuthProxyRequest(req, res)) {
+                return;
+            }
+
             const routeHtml = this.getRegisteredHtmlRoute(req.url);
             if (routeHtml && req.method === 'GET') {
                 res.writeHead(200, {
@@ -319,6 +578,7 @@ export class ProxyService {
             if (this.proxy) {
                 // Request uncompressed responses so HTML bridge injection can safely mutate the body.
                 delete req.headers['accept-encoding'];
+                this.rememberWorkflowProxyUrl(req.url);
 
                 const mergedCookies = this.buildMergedCookieHeader(req.headers.cookie);
                 if (mergedCookies) {
@@ -517,6 +777,9 @@ export class ProxyService {
   var _lastCanvasNode = null;
   var _uiMutationTimer = null;
   var _uiMutationCount = 0;
+  var _popupBridgeInstalled = false;
+  var _lastFormTestReadyAt = 0;
+  var _formTestReadyVisible = false;
 
   function postBridgeReady() {
     window.parent.postMessage({ type: "n8n-bridge-ready", build: N8NAC_BRIDGE_BUILD, pageKind: N8NAC_BRIDGE_PAGE_KIND, href: window.location.href }, "*");
@@ -530,6 +793,200 @@ export class ProxyService {
     if (typeof value !== "string") return "";
     return value.replace(/\\s+/g, " ").trim();
   }
+
+  function isPopupTarget(target) {
+    var normalized = cleanText(target || "_blank").toLowerCase();
+    return !normalized || normalized === "_blank" || normalized === "_new";
+  }
+
+  function isAnchorPopupTarget(target) {
+    var normalized = cleanText(target).toLowerCase();
+    return normalized === "_blank" || normalized === "_new";
+  }
+
+  function classifyExternalNavigation(url, target, fallbackReason) {
+    if (url === undefined || url === null) return false;
+    url = String(url);
+    if (!url) return false;
+    try {
+      var absoluteUrl = new URL(url, window.location.href);
+      var normalizedTarget = cleanText(target || "").toLowerCase();
+      var reason = fallbackReason || "unknown";
+      var isEndpoint = false;
+      if (absoluteUrl.pathname === "/form-test" || absoluteUrl.pathname.indexOf("/form-test/") === 0
+          || absoluteUrl.pathname === "/form" || absoluteUrl.pathname.indexOf("/form/") === 0) {
+        reason = "form-trigger";
+        isEndpoint = true;
+      } else if (absoluteUrl.pathname === "/webhook-test" || absoluteUrl.pathname.indexOf("/webhook-test/") === 0
+          || absoluteUrl.pathname === "/webhook" || absoluteUrl.pathname.indexOf("/webhook/") === 0) {
+        reason = "webhook";
+        isEndpoint = true;
+      }
+      return {
+        url: absoluteUrl,
+        reason: reason,
+        externalOrigin: absoluteUrl.origin !== window.location.origin,
+        endpoint: isEndpoint,
+        popupTarget: isPopupTarget(normalizedTarget),
+        anchorPopupTarget: isAnchorPopupTarget(normalizedTarget),
+        topTarget: normalizedTarget === "_top" || normalizedTarget === "_parent"
+      };
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function shouldExternalizeNavigation(url, target, fallbackReason) {
+    var classified = classifyExternalNavigation(url, target, fallbackReason);
+    if (!classified) return false;
+    return classified.externalOrigin || classified.endpoint || classified.anchorPopupTarget || classified.topTarget ? classified : false;
+  }
+
+  function postOpenExternal(url, target, reason, features, sourceKind) {
+    try {
+      var classified = classifyExternalNavigation(url, target, reason || "popup");
+      if (!classified) return false;
+      var absoluteUrl = classified.url;
+      if (absoluteUrl.protocol !== "http:" && absoluteUrl.protocol !== "https:") return false;
+      window.parent.postMessage({
+        type: "n8n-external-navigation",
+        build: N8NAC_BRIDGE_BUILD,
+        url: absoluteUrl.toString(),
+        reason: classified.reason,
+        target: typeof target === "string" ? target : "",
+        features: typeof features === "string" ? features : "",
+        source: {
+          opener: sourceKind || "unknown",
+          iframeHref: window.location.href,
+          pageKind: N8NAC_BRIDGE_PAGE_KIND,
+          bridgeBuild: N8NAC_BRIDGE_BUILD
+        }
+      }, "*");
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function createPopupBridgeWindow(target) {
+    var locationProxy = {
+      assign: function(nextUrl) { postOpenExternal(nextUrl, target, "delayed-popup", "", "popup.location.assign"); },
+      replace: function(nextUrl) { postOpenExternal(nextUrl, target, "delayed-popup", "", "popup.location.replace"); },
+      toString: function() { return ""; }
+    };
+    var popup = {
+      closed: false,
+      close: function() { this.closed = true; },
+      focus: function() {},
+      blur: function() {}
+    };
+
+    Object.defineProperty(locationProxy, "href", {
+      get: function() { return ""; },
+      set: function(nextUrl) { postOpenExternal(nextUrl, target, "delayed-popup", "", "popup.location.href"); }
+    });
+    Object.defineProperty(popup, "location", {
+      get: function() { return locationProxy; },
+      set: function(nextUrl) { postOpenExternal(nextUrl, target, "delayed-popup", "", "popup.location"); }
+    });
+
+    return popup;
+  }
+
+  function installPopupBridge() {
+    if (_popupBridgeInstalled) return;
+    _popupBridgeInstalled = true;
+    var originalWindowOpen = window.open;
+    window.open = function(url, target, features) {
+      var classified = url === undefined || url === null || !String(url) ? false : shouldExternalizeNavigation(url, target, "popup");
+      if (isPopupTarget(target) || classified) {
+        var popup = createPopupBridgeWindow(target);
+        if (url === undefined || url === null || !String(url)) return popup;
+        if (postOpenExternal(url, target, classified ? classified.reason : "popup", features, "window.open")) return popup;
+      }
+      return originalWindowOpen.apply(window, arguments);
+    };
+
+    if (window.HTMLAnchorElement && window.HTMLAnchorElement.prototype) {
+      var originalAnchorClick = window.HTMLAnchorElement.prototype.click;
+      window.HTMLAnchorElement.prototype.click = function() {
+        var href = this && this.getAttribute ? this.getAttribute("href") || "" : "";
+        var target = this && this.getAttribute ? this.getAttribute("target") || "" : "";
+        var classified = shouldExternalizeNavigation(href, target, "popup");
+        if (classified && postOpenExternal(href, target, classified.reason, "", "anchor.click")) return;
+        return originalAnchorClick.apply(this, arguments);
+      };
+    }
+
+    try {
+      if (window.Location && window.Location.prototype) {
+        var originalLocationAssign = window.Location.prototype.assign;
+        var originalLocationReplace = window.Location.prototype.replace;
+        window.Location.prototype.assign = function(nextUrl) {
+          var classified = shouldExternalizeNavigation(nextUrl, "_self", "unknown");
+          if (classified && postOpenExternal(nextUrl, "_self", classified.reason, "", "location.assign")) return;
+          return originalLocationAssign.apply(this, arguments);
+        };
+        window.Location.prototype.replace = function(nextUrl) {
+          var classified = shouldExternalizeNavigation(nextUrl, "_self", "unknown");
+          if (classified && postOpenExternal(nextUrl, "_self", classified.reason, "", "location.replace")) return;
+          return originalLocationReplace.apply(this, arguments);
+        };
+      }
+    } catch (e) {}
+
+    try {
+      var originalPushState = history.pushState;
+      var originalReplaceState = history.replaceState;
+      history.pushState = function(state, title, url) {
+        var result = originalPushState.apply(this, arguments);
+        if (url !== undefined && url !== null) {
+          var classified = shouldExternalizeNavigation(url, "_self", "unknown");
+          if (classified) postOpenExternal(url, "_self", classified.reason, "", "history.pushState");
+        }
+        return result;
+      };
+      history.replaceState = function(state, title, url) {
+        var result = originalReplaceState.apply(this, arguments);
+        if (url !== undefined && url !== null) {
+          var classified = shouldExternalizeNavigation(url, "_self", "unknown");
+          if (classified) postOpenExternal(url, "_self", classified.reason, "", "history.replaceState");
+        }
+        return result;
+      };
+    } catch (e) {}
+
+    document.addEventListener("click", function(e) {
+      var target = e.target;
+      var anchor = target && target.closest ? target.closest("a[href]") : null;
+      if (!anchor) return;
+      var href = anchor.getAttribute("href") || "";
+      var anchorTarget = anchor.getAttribute("target") || "";
+      var classified = shouldExternalizeNavigation(href, anchorTarget, "popup");
+      if (!classified) return;
+      if (anchor.hasAttribute("download")) return;
+      if (!postOpenExternal(href, anchorTarget, classified.reason, "", "anchor.click-event")) return;
+      e.preventDefault();
+      e.stopPropagation();
+      e.stopImmediatePropagation();
+    }, true);
+
+    document.addEventListener("submit", function(e) {
+      var form = e.target;
+      if (!form || !form.getAttribute) return;
+      var submitter = e.submitter && e.submitter.getAttribute ? e.submitter : null;
+      var action = (submitter && submitter.getAttribute("formaction")) || form.getAttribute("action") || window.location.href;
+      var target = (submitter && submitter.getAttribute("formtarget")) || form.getAttribute("target") || "";
+      var classified = shouldExternalizeNavigation(action, target, "popup");
+      if (!classified) return;
+      if (!postOpenExternal(action, target, classified.reason, "", "form.submit")) return;
+      e.preventDefault();
+      e.stopPropagation();
+      e.stopImmediatePropagation();
+    }, true);
+  }
+
+  installPopupBridge();
 
   function coerceNode(value) {
     var record = asRecord(value);
@@ -579,12 +1036,43 @@ export class ProxyService {
     if (_uiMutationTimer) return;
     _uiMutationTimer = window.setTimeout(function() {
       _uiMutationTimer = null;
+      detectFormTestReady();
       window.parent.postMessage({
         type: "n8n-ui-change",
         build: N8NAC_BRIDGE_BUILD,
         count: _uiMutationCount
       }, "*");
     }, 250);
+  }
+
+  function detectFormTestReady() {
+    var text = cleanText((document.body && document.body.textContent) || "");
+    if (!text) {
+      _formTestReadyVisible = false;
+      return;
+    }
+    var looksReady = /Waiting for you to submit the form/i.test(text)
+      || /En attente de l'envoi du formulaire/i.test(text)
+      || /soumettre le formulaire/i.test(text);
+    if (!looksReady) {
+      _formTestReadyVisible = false;
+      return;
+    }
+    if (_formTestReadyVisible) return;
+    var now = Date.now();
+    if (now - _lastFormTestReadyAt < 1200) return;
+    _formTestReadyVisible = true;
+    _lastFormTestReadyAt = now;
+    window.parent.postMessage({
+      type: "n8n-form-test-ready",
+      build: N8NAC_BRIDGE_BUILD,
+      source: {
+        opener: "semantic.form-trigger-ready",
+        iframeHref: window.location.href,
+        pageKind: N8NAC_BRIDGE_PAGE_KIND,
+        bridgeBuild: N8NAC_BRIDGE_BUILD
+      }
+    }, "*");
   }
 
   function firstUsefulText(root) {
@@ -882,6 +1370,7 @@ export class ProxyService {
 
   function installNodeDetailObserver() {
     postBridgeReady();
+    installPopupBridge();
     if (!NODE_BRIDGE_ENABLED) return;
     document.addEventListener("pointerdown", function(e) {
       var node = readNodeFromElement(e.target);
@@ -902,6 +1391,7 @@ export class ProxyService {
       var observer = new MutationObserver(function() { postUiChangedSoon(); });
       observer.observe(document.body || document.documentElement, { childList: true, subtree: true, attributes: true });
     } catch (e) {}
+    detectFormTestReady();
     window.setInterval(postBridgeReady, 5000);
   }
 

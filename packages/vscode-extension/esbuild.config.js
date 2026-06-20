@@ -17,13 +17,10 @@ const managerCoreAgentToolingPaths = new Set([
     managerCoreAgentToolingPath,
     fs.existsSync(managerCoreAgentToolingPath) ? fs.realpathSync(managerCoreAgentToolingPath) : managerCoreAgentToolingPath,
 ]);
-const runtimeDependencyRoots = [
-    '@yagr/deepagent-bootstrap',
-    '@yagr/provider-runtime',
-    '@yagr/session-service',
-    '@yagr/stream-adapter',
-];
-const bundledSkillsAssetFiles = new Set([
+const runtimeDependencyRoots = Object.keys(
+    JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).dependencies || {}
+);
+const legacyBundledSkillsAssetFiles = new Set([
     'n8n-docs-complete.json',
     'n8n-knowledge-index.json',
     'n8n-nodes-technical.json',
@@ -34,20 +31,21 @@ function packageNameToParts(packageName) {
     return packageName.startsWith('@') ? packageName.split('/') : [packageName];
 }
 
-function getPackageDir(packageName) {
+function getPackageDir(packageName, fromDir) {
     const parts = packageNameToParts(packageName);
     try {
         const packageJsonPath = require.resolve(`${packageName}/package.json`, {
-            paths: [__dirname, path.join(__dirname, '..', '..')],
+            paths: [fromDir, __dirname, path.join(__dirname, '..', '..')].filter(Boolean),
         });
         return path.dirname(packageJsonPath);
     } catch {
         // Fall back to direct node_modules probing below.
     }
     const candidates = [
+        fromDir ? path.join(fromDir, 'node_modules', ...parts) : undefined,
         path.join(__dirname, '..', '..', 'node_modules', ...parts),
         path.join(__dirname, 'node_modules', ...parts),
-    ];
+    ].filter(Boolean);
     return candidates.find(candidate => fs.existsSync(path.join(candidate, 'package.json')));
 }
 
@@ -56,35 +54,50 @@ function readPackageJson(packageDir) {
 }
 
 function collectRuntimeDependencyClosure(packageNames) {
-    const seen = new Set();
-    const queue = [...packageNames];
+    const seenPackageDirs = new Set();
+    const seenPackageNames = new Set();
+    const queue = packageNames.map(packageName => ({ packageName, fromDir: __dirname }));
 
     while (queue.length > 0) {
-        const packageName = queue.shift();
-        if (!packageName || seen.has(packageName)) {
+        const entry = queue.shift();
+        const packageName = entry?.packageName;
+        if (!packageName) {
             continue;
         }
 
-        const packageDir = getPackageDir(packageName);
+        const packageDir = getPackageDir(packageName, entry.fromDir);
         if (!packageDir) {
             console.warn(`⚠️  runtime dependency not installed, skipping copy: ${packageName}`);
             continue;
         }
+        const realPackageDir = fs.realpathSync(packageDir);
+        if (seenPackageDirs.has(realPackageDir)) {
+            continue;
+        }
 
-        seen.add(packageName);
+        seenPackageDirs.add(realPackageDir);
+        seenPackageNames.add(packageName);
+        const copiedPackageDir = getPackageDir(packageName, __dirname);
+        if (copiedPackageDir) {
+            const realCopiedPackageDir = fs.realpathSync(copiedPackageDir);
+            if (!seenPackageDirs.has(realCopiedPackageDir)) {
+                queue.push({ packageName, fromDir: __dirname });
+            }
+        }
         const packageJson = readPackageJson(packageDir);
         const dependencyNames = [
             ...Object.keys(packageJson.dependencies || {}),
             ...Object.keys(packageJson.optionalDependencies || {}),
         ];
         for (const dependencyName of dependencyNames) {
-            if (!seen.has(dependencyName) && getPackageDir(dependencyName)) {
-                queue.push(dependencyName);
+            const dependencyDir = getPackageDir(dependencyName, realPackageDir);
+            if (dependencyDir && !seenPackageDirs.has(fs.realpathSync(dependencyDir))) {
+                queue.push({ packageName: dependencyName, fromDir: realPackageDir });
             }
         }
     }
 
-    return [...seen].sort();
+    return [...seenPackageNames].sort();
 }
 
 function copyRuntimeDependency(packageName, targetNodeModulesDir) {
@@ -96,7 +109,43 @@ function copyRuntimeDependency(packageName, targetNodeModulesDir) {
     const targetDir = path.join(targetNodeModulesDir, ...packageNameToParts(packageName));
     fs.mkdirSync(path.dirname(targetDir), { recursive: true });
     fs.rmSync(targetDir, { recursive: true, force: true });
-    fs.cpSync(fs.realpathSync(sourceDir), targetDir, {
+
+    const realSourceDir = fs.realpathSync(sourceDir);
+    const workspacePackagesDir = path.resolve(__dirname, '..');
+    const packageJson = readPackageJson(realSourceDir);
+    const isWorkspacePackage = realSourceDir.startsWith(`${workspacePackagesDir}${path.sep}`);
+
+    if (isWorkspacePackage && Array.isArray(packageJson.files) && packageJson.files.length > 0) {
+        fs.mkdirSync(targetDir, { recursive: true });
+        fs.copyFileSync(path.join(realSourceDir, 'package.json'), path.join(targetDir, 'package.json'));
+        for (const entry of packageJson.files) {
+            if (entry.includes('*')) {
+                continue;
+            }
+            const sourcePath = path.join(realSourceDir, entry);
+            if (!fs.existsSync(sourcePath)) {
+                continue;
+            }
+            const targetPath = path.join(targetDir, entry);
+            fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+            fs.cpSync(sourcePath, targetPath, { recursive: true, dereference: true });
+        }
+        const binEntries = typeof packageJson.bin === 'string'
+            ? [packageJson.bin]
+            : Object.values(packageJson.bin || {});
+        for (const entry of binEntries) {
+            const sourcePath = path.join(realSourceDir, entry);
+            if (!fs.existsSync(sourcePath)) {
+                continue;
+            }
+            const targetPath = path.join(targetDir, entry);
+            fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+            fs.cpSync(sourcePath, targetPath, { recursive: true, dereference: true });
+        }
+        return;
+    }
+
+    fs.cpSync(realSourceDir, targetDir, {
         recursive: true,
         dereference: true,
     });
@@ -146,133 +195,147 @@ try {
     }
 } catch { /* ignore */ }
 
-// Plugin to copy skills assets and CLI assets
-const copySkillsAssets = {
-    name: 'copy-skills-assets',
-    setup(build) {
-        build.onEnd(() => {
-            const skillsAssetsDir = path.join(
-                __dirname,
-                'node_modules',
-                '@n8n-as-code',
-                'skills',
-                'dist',
-                'assets'
-            );
+function copySkillsAssets() {
+    const targetDir = path.join(__dirname, 'assets');
 
-            // Fallback to local workspace for development
-            const fallbackAssetsDir = path.join(__dirname, '..', 'skills', 'dist', 'assets');
-
-            const sourceDir = fs.existsSync(skillsAssetsDir) ? skillsAssetsDir : fallbackAssetsDir;
-            const targetDir = path.join(__dirname, 'assets');
-
-            if (!fs.existsSync(sourceDir)) {
-                console.warn('⚠️  skills assets not found, skipping copy');
-            } else {
-                // Create target directory
-                if (!fs.existsSync(targetDir)) {
-                    fs.mkdirSync(targetDir, { recursive: true });
-                }
-
-                for (const file of fs.readdirSync(targetDir)) {
-                    if (file.endsWith('.json') && !bundledSkillsAssetFiles.has(file)) {
-                        fs.rmSync(path.join(targetDir, file), { force: true });
-                    }
-                }
-
-                // Copy JSON files
-                const files = fs.readdirSync(sourceDir).filter(f => bundledSkillsAssetFiles.has(f));
-                for (const file of files) {
-                    const src = path.join(sourceDir, file);
-                    const dest = path.join(targetDir, file);
-                    fs.copyFileSync(src, dest);
-                    console.log(`✅ Copied ${file} to assets/`);
-                }
-            }
-
-            // Copy canonical agent skills so the bundled AiContextGenerator can
-            // materialize .agents/skills in user workspaces. The bundled generator
-            // resolves these relative to out/extension.js.
-            const skillsDirCandidates = [
-                path.join(__dirname, 'node_modules', '@n8n-as-code', 'skills', 'dist', 'agent-skills'),
-                path.join(__dirname, '..', 'skills', 'src', 'agent-skills'),
-                path.join(__dirname, '..', 'skills', 'dist', 'agent-skills'),
-            ];
-            const skillsDirSrc = skillsDirCandidates.find(p => fs.existsSync(p));
-            const bundledSkillsTargetDir = path.join(__dirname, 'out', 'agent-skills');
-            if (!skillsDirSrc) {
-                console.warn(
-                    '⚠️  agent skills not found — AiContextGenerator will be unable to ' +
-                    'write .agents/skills to user workspaces. Checked:\n' +
-                    skillsDirCandidates.map(p => `  ${p}`).join('\n')
-                );
-            } else {
-                fs.rmSync(bundledSkillsTargetDir, { recursive: true, force: true });
-                fs.cpSync(skillsDirSrc, bundledSkillsTargetDir, { recursive: true });
-                console.log('✅ Copied agent skills to out/agent-skills/');
-            }
-
-            // Copy n8n-workflows.d.ts so WorkspaceSetupService can locate it when
-            // n8nac is bundled into out/extension.js (resolveAssetPath looks at
-            // path.join(__dirname, '..', 'assets') relative to the bundle, which
-            // resolves to the extension's top-level assets/ directory).
-            //
-            // Candidate paths (in order):
-            //   1. node_modules/n8nac/dist/core/assets/ — installed npm package layout
-            //      (n8nac package.json "files": ["dist/"], build copies the .d.ts there)
-            //   2. ../cli/dist/core/assets/             — local workspace after `npm run build`
-            //   3. ../cli/src/core/assets/              — local workspace source (dev fallback)
-            const declarationFileCandidates = [
-                path.join(__dirname, 'node_modules', 'n8nac', 'dist', 'core', 'assets', 'n8n-workflows.d.ts'),
-                path.join(__dirname, '..', 'cli', 'dist', 'core', 'assets', 'n8n-workflows.d.ts'),
-                path.join(__dirname, '..', 'cli', 'src', 'core', 'assets', 'n8n-workflows.d.ts'),
-            ];
-            const declarationFileSrc = declarationFileCandidates.find(p => fs.existsSync(p));
-            if (!declarationFileSrc) {
-                console.warn(
-                    '⚠️  n8n-workflows.d.ts not found — WorkspaceSetupService will be unable to ' +
-                    'write the TypeScript stub to user workspaces. Checked:\n' +
-                    declarationFileCandidates.map(p => `  ${p}`).join('\n')
-                );
-            } else {
-                if (!fs.existsSync(targetDir)) {
-                    fs.mkdirSync(targetDir, { recursive: true });
-                }
-                const declarationFileDest = path.join(targetDir, 'n8n-workflows.d.ts');
-                fs.copyFileSync(declarationFileSrc, declarationFileDest);
-                console.log('✅ Copied n8n-workflows.d.ts to assets/');
-            }
-
-            const targetNodeModulesDir = path.join(__dirname, 'out', 'node_modules');
-            fs.rmSync(targetNodeModulesDir, { recursive: true, force: true });
-            const runtimeDependencies = collectRuntimeDependencyClosure(runtimeDependencyRoots);
-            for (const packageName of runtimeDependencies) {
-                copyRuntimeDependency(packageName, targetNodeModulesDir);
-            }
-            console.log(`✅ Copied ${runtimeDependencies.length} runtime dependencies to node_modules/`);
-        });
+    if (!fs.existsSync(targetDir)) {
+        fs.mkdirSync(targetDir, { recursive: true });
     }
-};
 
-// Build configuration for Extension
-const extensionBuild = esbuild.build({
-    entryPoints: ['./src/extension.ts'],
-    bundle: true,
-    outfile: 'out/extension.js',
-    external: ['vscode', 'prettier', '@yagr/*'],
-    format: 'cjs',
-    platform: 'node',
-    logOverride: {
-        'empty-import-meta': 'silent'
-    },
-    define: {
-        // 'next' on pre-release builds, '' on stable — drives npx dist-tag in AGENTS.md
-        '__N8NAC_VERSION__': JSON.stringify(n8nacVersion),
-        // Installed n8nac CLI semver — stamped into AGENTS.md for stale-detection
-        '__N8NAC_CLI_SEMVER__': JSON.stringify(n8nacCliSemver),
-    },
-    plugins: [preserveManagerCoreEntrypointResolution, copySkillsAssets]
-});
+    for (const file of legacyBundledSkillsAssetFiles) {
+        fs.rmSync(path.join(targetDir, file), { force: true });
+    }
+
+    const skillsDirCandidates = [
+        path.join(__dirname, 'node_modules', '@n8n-as-code', 'skills', 'dist', 'agent-skills'),
+        path.join(__dirname, '..', 'skills', 'src', 'agent-skills'),
+        path.join(__dirname, '..', 'skills', 'dist', 'agent-skills'),
+    ];
+    const skillsDirSrc = skillsDirCandidates.find(p => fs.existsSync(p));
+    const bundledSkillsTargetDir = path.join(__dirname, 'out', 'agent-skills');
+    if (!skillsDirSrc) {
+        throw new Error(
+            'agent skills not found — AiContextGenerator will be unable to ' +
+            'write .agents/skills to user workspaces. Checked:\n' +
+            skillsDirCandidates.map(p => `  ${p}`).join('\n')
+        );
+    } else {
+        fs.rmSync(bundledSkillsTargetDir, { recursive: true, force: true });
+        fs.cpSync(skillsDirSrc, bundledSkillsTargetDir, { recursive: true });
+        console.log('✅ Copied agent skills to out/agent-skills/');
+    }
+
+    const declarationFileCandidates = [
+        path.join(__dirname, 'node_modules', 'n8nac', 'dist', 'core', 'assets', 'n8n-workflows.d.ts'),
+        path.join(__dirname, '..', 'cli', 'dist', 'core', 'assets', 'n8n-workflows.d.ts'),
+        path.join(__dirname, '..', 'cli', 'src', 'core', 'assets', 'n8n-workflows.d.ts'),
+    ];
+    const declarationFileSrc = declarationFileCandidates.find(p => fs.existsSync(p));
+    if (!declarationFileSrc) {
+        console.warn(
+            '⚠️  n8n-workflows.d.ts not found — WorkspaceSetupService will be unable to ' +
+            'write the TypeScript stub to user workspaces. Checked:\n' +
+            declarationFileCandidates.map(p => `  ${p}`).join('\n')
+        );
+    } else {
+        if (!fs.existsSync(targetDir)) {
+            fs.mkdirSync(targetDir, { recursive: true });
+        }
+        const declarationFileDest = path.join(targetDir, 'n8n-workflows.d.ts');
+        fs.copyFileSync(declarationFileSrc, declarationFileDest);
+        console.log('✅ Copied n8n-workflows.d.ts to assets/');
+    }
+}
+
+function copyRuntimeDependencies() {
+    const targetNodeModulesDir = path.join(__dirname, 'out', 'node_modules');
+    fs.rmSync(targetNodeModulesDir, { recursive: true, force: true });
+    const runtimeDependencies = collectRuntimeDependencyClosure(runtimeDependencyRoots);
+    for (const packageName of runtimeDependencies) {
+        copyRuntimeDependency(packageName, targetNodeModulesDir);
+    }
+    fs.rmSync(path.join(targetNodeModulesDir, '@n8n-as-code', 'skills', 'dist', 'assets'), { recursive: true, force: true });
+    console.log(`✅ Copied ${runtimeDependencies.length} runtime dependencies to node_modules/`);
+}
+
+function writeSplitExtensionEntrypoint() {
+    const extensionPath = path.join(__dirname, 'out', 'extension.js');
+    const extensionMapPath = path.join(__dirname, 'out', 'extension.js.map');
+    const runtimePath = path.join(__dirname, 'out', 'extension-runtime.mjs');
+    const runtimeMapPath = path.join(__dirname, 'out', 'extension-runtime.mjs.map');
+    const staleCommonJsRuntimePath = path.join(__dirname, 'out', 'extension-runtime.js');
+    const staleCommonJsRuntimeMapPath = path.join(__dirname, 'out', 'extension-runtime.js.map');
+
+    if (!fs.existsSync(extensionPath)) {
+        throw new Error('out/extension.js is missing; run `npm run compile` before `npm run package-bundle`.');
+    }
+
+    fs.rmSync(runtimePath, { force: true });
+    fs.rmSync(runtimeMapPath, { force: true });
+    fs.rmSync(staleCommonJsRuntimePath, { force: true });
+    fs.rmSync(staleCommonJsRuntimeMapPath, { force: true });
+
+    esbuild.buildSync({
+        entryPoints: ['./src/extension.ts'],
+        bundle: true,
+        outfile: runtimePath,
+        format: 'esm',
+        platform: 'node',
+        target: ['node18'],
+        packages: 'external',
+        sourcemap: true,
+        define: {
+            __N8NAC_VERSION__: JSON.stringify(n8nacVersion),
+            __N8NAC_CLI_SEMVER__: JSON.stringify(n8nacCliSemver),
+        },
+    });
+    fs.rmSync(extensionMapPath, { force: true });
+
+    fs.writeFileSync(extensionPath, `'use strict';
+Object.defineProperty(exports, '__esModule', { value: true });
+exports.activate = activate;
+exports.deactivate = deactivate;
+const path = require('node:path');
+process.env.N8N_AS_CODE_ASSETS_DIR ??= path.join(__dirname, '..', 'assets');
+let runtime;
+function loadRuntime() {
+  runtime ??= import('./extension-runtime.mjs');
+  return runtime;
+}
+async function activate(context) {
+  try {
+    return await (await loadRuntime()).activate(context);
+  } catch (error) {
+    const vscode = require('vscode');
+    const message = error && (error.stack || error.message) || String(error);
+    const outputChannel = vscode.window.createOutputChannel('n8n-as-code');
+    outputChannel.appendLine('[n8n] Failed to load extension runtime: ' + message);
+    try {
+      context.subscriptions.push(vscode.commands.registerCommand('n8n.configure', async () => {
+        outputChannel.show(true);
+        vscode.window.showErrorMessage('n8n as code could not load its full runtime. See the n8n-as-code output channel for details.');
+      }));
+    } catch (registrationError) {
+      outputChannel.appendLine('[n8n] Failed to register fallback configure command: ' + ((registrationError && (registrationError.stack || registrationError.message)) || String(registrationError)));
+    }
+    vscode.window.showErrorMessage('n8n as code could not load its full runtime. See the n8n-as-code output channel for details.');
+  }
+}
+function deactivate() {
+  return runtime ? Promise.resolve(runtime).then((loadedRuntime) => typeof loadedRuntime.deactivate === 'function' ? loadedRuntime.deactivate() : undefined) : undefined;
+}
+//# sourceMappingURL=extension.js.map
+`);
+    fs.writeFileSync(extensionMapPath, JSON.stringify({
+        version: 3,
+        file: 'extension.js',
+        sources: ['extension.ts'],
+        names: [],
+        mappings: '',
+    }));
+
+    console.log('✅ Split VS Code extension entrypoint into out/extension.js and out/extension-runtime.mjs');
+}
 
 const localOpenBridgeBuild = esbuild.build({
     entryPoints: ['./src/local-open-bridge-entrypoint.ts'],
@@ -292,4 +355,13 @@ const settingsWebviewBuild = esbuild.build({
     target: ['es2022'],
 });
 
-Promise.all([extensionBuild, localOpenBridgeBuild, settingsWebviewBuild]).catch(() => process.exit(1));
+Promise.all([localOpenBridgeBuild, settingsWebviewBuild])
+    .then(() => {
+        copySkillsAssets();
+        copyRuntimeDependencies();
+        writeSplitExtensionEntrypoint();
+    })
+    .catch((error) => {
+        console.error(error);
+        process.exit(1);
+    });

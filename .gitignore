@@ -93,3 +93,6 @@ test-results/
 .kilo/*
 
 .turbo/
+.tmp/
+
+native_mcp_config.json

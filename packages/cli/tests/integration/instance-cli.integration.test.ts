@@ -39,6 +39,15 @@ function runCli(cwd: string, homeDir: string, args: string[]) {
     });
 }
 
+function runCliWithInput(cwd: string, homeDir: string, args: string[], input: string) {
+    return execFileSync('node', [cliEntry, ...args], {
+        cwd,
+        env: makeEnv(homeDir),
+        input,
+        encoding: 'utf8',
+    });
+}
+
 beforeAll(() => {
     execFileSync('npm', ['run', 'build', '--workspace=packages/cli'], {
         cwd: repoRoot,
@@ -63,11 +72,11 @@ function runCliExpectFailure(cwd: string, homeDir: string, args: string[]) {
 }
 
 describe('CLI workspace integration', () => {
-    it('loads full skills help when global options are placed between help and skills', () => {
+    it('loads full skills help without legacy global instance options', () => {
         const workspaceDir = createTempDir('n8nac-cli-help-workspace-');
         const homeDir = createTempDir('n8nac-cli-help-home-');
 
-        const output = runCli(workspaceDir, homeDir, ['help', '--instance', 'demo', 'skills']);
+        const output = runCli(workspaceDir, homeDir, ['help', 'skills']);
 
         expect(stripAnsi(output)).toContain('search [options] <query>');
         expect(stripAnsi(output)).toContain('examples');
@@ -132,13 +141,9 @@ describe('CLI workspace integration', () => {
         const legacyOutput = runCliExpectFailure(workspaceDir, homeDir, ['instance', 'list', '--json']);
         expect(stripAnsi(legacyOutput)).toContain("unknown command 'instance'");
 
-        const workspaceStatus = JSON.parse(runCli(workspaceDir, homeDir, ['workspace', 'status', '--json']));
-        expect(workspaceStatus).toMatchObject({
-            status: 'dry-run',
-            required: true,
-            nextCommand: 'n8nac workspace migrate --json',
-            applyCommand: 'n8nac workspace migrate --write',
-        });
+        const workspaceStatus = runCliExpectFailure(workspaceDir, homeDir, ['workspace', 'status', '--json']);
+        expect(stripAnsi(workspaceStatus)).toContain('Unsupported n8nac workspace config version: 3');
+        expect(stripAnsi(workspaceStatus)).not.toContain('workspace migrate');
 
         const workspaceConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
         expect(workspaceConfig.activeInstanceId).toBe('test');
@@ -153,13 +158,13 @@ describe('CLI workspace integration', () => {
             'env', 'add', 'Dev',
             '--base-url', 'https://dev.example.com',
             '--api-key', 'dev-key',
-            '--sync-folder', 'workflows/dev',
+            '--workflows-path', 'workflows/dev',
             '--json',
         ]));
 
         expect(created).toMatchObject({
             name: 'Dev',
-            syncFolder: 'workflows/dev',
+            workflowsPath: 'workflows/dev',
             projectId: 'personal',
             projectName: 'Personal',
         });
@@ -177,11 +182,8 @@ describe('CLI workspace integration', () => {
         expect(JSON.stringify(workspaceConfig)).not.toContain('apiKey');
         expect(JSON.stringify(workspaceConfig)).not.toContain('dev-key');
 
-        const migration = JSON.parse(runCli(workspaceDir, homeDir, ['workspace', 'migrate', '--json']));
-        expect(migration).toMatchObject({
-            status: 'not-needed',
-            required: false,
-        });
+        const migration = runCliExpectFailure(workspaceDir, homeDir, ['workspace', 'migrate', '--json']);
+        expect(stripAnsi(migration)).toContain("unknown command 'migrate'");
     });
 
     it('stores env auth locally for external workspace targets', () => {
@@ -214,6 +216,43 @@ describe('CLI workspace integration', () => {
             apiKeySource: 'workspace-local',
         });
         expect(authOutput).not.toContain('dev-key');
+    });
+
+    it('configures native MCP assist per environment without committing the token', () => {
+        const workspaceDir = createTempDir('n8nac-cli-native-mcp-workspace-');
+        const homeDir = createTempDir('n8nac-cli-native-mcp-home-');
+
+        const created = JSON.parse(runCli(workspaceDir, homeDir, [
+            'env', 'add', 'Dev',
+            '--base-url', 'https://dev.example.com',
+            '--api-key', 'dev-key',
+            '--workflows-path', 'workflows/dev',
+            '--json',
+        ]));
+        const configured = JSON.parse(runCliWithInput(workspaceDir, homeDir, [
+            'native-mcp', 'configure', 'Dev',
+            '--url', 'https://dev.example.com/mcp-server/http',
+            '--token-stdin',
+            '--allow-execution-data',
+            '--json',
+        ], 'native-secret-token'));
+
+        expect(configured).toMatchObject({
+            id: created.id,
+            nativeMcp: {
+                enabled: true,
+                url: 'https://dev.example.com/mcp-server/http',
+                allowExecutionData: true,
+                tokenConfigured: true,
+            },
+        });
+        const workspaceConfig = fs.readFileSync(path.join(workspaceDir, 'n8nac-config.json'), 'utf8');
+        expect(workspaceConfig).toContain('nativeMcp');
+        expect(workspaceConfig).not.toContain('native-secret-token');
+        expect(workspaceConfig).not.toContain('dev-key');
+
+        const disabled = JSON.parse(runCli(workspaceDir, homeDir, ['native-mcp', 'disable', 'Dev', '--json']));
+        expect(disabled.nativeMcp).toMatchObject({ enabled: false, tokenConfigured: false });
     });
 
     it('rejects env auth set for managed environments', () => {

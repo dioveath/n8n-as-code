@@ -75,6 +75,43 @@ test('Bridge script: sends node detail opened messages', () => {
     assert.ok(script.includes('readNodeFromElement'), 'Must extract node context from canvas elements');
 });
 
+test('Bridge script: relays popup openings to the parent webview', () => {
+    const { ProxyService } = require('../../src/services/proxy-service.js');
+    const script: string = ProxyService.buildBridgeScript();
+
+    assert.ok(script.includes('"n8n-external-navigation"'), 'Must publish source-rich external navigation requests');
+    assert.ok(!script.includes('N8N_LEGACY_OPEN_EXTERNAL_TYPE'), 'Must not keep an unused legacy popup-open marker in the iframe bridge');
+    assert.ok(script.includes('window.open = function(url, target, features)'), 'Must intercept window.open calls');
+    assert.ok(script.includes('target.closest("a[href]")'), 'Must intercept target=_blank anchor clicks');
+    assert.ok(script.includes('if (_popupBridgeInstalled) return;'), 'Must install popup bridge idempotently');
+    assert.ok(script.includes('installPopupBridge();'), 'Must install popup bridge before n8n can cache window.open');
+    assert.ok(script.includes('window.HTMLAnchorElement.prototype.click'), 'Must intercept programmatic anchor clicks');
+    assert.ok(script.includes('document.addEventListener("submit"'), 'Must intercept popup form submissions');
+    assert.ok(script.includes('classifyExternalNavigation'), 'Must classify external navigation routes in the iframe');
+    assert.ok(script.includes('shouldExternalizeNavigation'), 'Must centralize bridge-side externalization checks');
+    assert.ok(script.includes('Location.prototype.assign'), 'Must intercept location.assign when possible');
+    assert.ok(script.includes('history.pushState'), 'Must observe SPA route pushes for public endpoints');
+    assert.ok(script.includes('formaction'), 'Must respect submitter formaction overrides');
+    assert.ok(script.includes('formtarget'), 'Must respect submitter formtarget overrides');
+    assert.ok(script.includes('detectFormTestReady'), 'Must detect n8n Form Trigger waiting state');
+    assert.ok(script.includes('_formTestReadyVisible'), 'Must emit Form Trigger readiness once per visible ready-state transition');
+    assert.ok(script.includes('"n8n-form-test-ready"'), 'Must notify the parent webview when a Form Trigger is waiting');
+    assert.ok(script.includes('Waiting for you to submit the form'), 'Must detect the English Form Trigger waiting hint');
+    assert.ok(script.includes('soumettre le formulaire'), 'Must detect localized Form Trigger waiting hints');
+    assert.ok(script.includes('absoluteUrl.pathname === "/form-test"'), 'Must identify the root form-test route');
+    assert.ok(script.includes('absoluteUrl.pathname.indexOf("/form-test/") === 0'), 'Must identify nested form-test routes');
+    assert.ok(script.includes('absoluteUrl.pathname === "/webhook-test"'), 'Must identify the root webhook-test route');
+    assert.ok(script.includes('!classified) return'), 'Must not intercept ordinary same-frame anchor clicks');
+    assert.ok(script.includes('new URL(url, window.location.href)'), 'Must resolve relative popup URLs against the proxied page');
+    assert.ok(script.includes('absoluteUrl.protocol !== "http:" && absoluteUrl.protocol !== "https:"'), 'Must only relay browser-safe URL schemes');
+    assert.ok(script.includes('createPopupBridgeWindow'), 'Must return a synthetic popup handle for delayed popup navigation');
+    assert.ok(script.includes('Object.defineProperty(popup, "location"'), 'Must intercept popup.location assignment');
+    assert.ok(script.includes('Object.defineProperty(locationProxy, "href"'), 'Must intercept popup.location.href assignment');
+    assert.ok(script.includes('assign: function(nextUrl)'), 'Must intercept popup.location.assign');
+    assert.ok(script.includes('replace: function(nextUrl)'), 'Must intercept popup.location.replace');
+    assert.ok(script.includes('return popup'), 'window.open popup targets must return a popup-like handle');
+});
+
 test('Bridge script: does not validate nonce on incoming paste message', () => {
     // The n8n-clipboard-paste handler in the iframe should accept the message
     // without a nonce check — security is enforced in the parent webview layer.
@@ -201,6 +238,137 @@ test('ProxyService: redirects match target base paths on URL boundaries', () => 
     );
 });
 
+test('ProxyService: external n8n redirects create browser auth handoff URLs', () => {
+    const { ProxyService } = require('../../src/services/proxy-service.js');
+    const service = new ProxyService();
+    (service as any).target = 'https://n8n.example.test';
+    service.setPublicBaseUrl('https://code.example.test/proxy/25444');
+
+    const handoff = (service as any).createExternalAuthHandoff(
+        'https://idp.example.test/sso?state=abc',
+        'https://code.example.test/proxy/25444/workflow/wf-1',
+    );
+
+    assert.ok(handoff, 'External redirects should produce a handoff page');
+    assert.ok(
+        handoff.authProxyUrl.startsWith('https://code.example.test/proxy/25444/__n8nac-external-auth/'),
+        'Auth URL should stay on the workflow proxy so callback cookies can be captured',
+    );
+    assert.ok(
+        handoff.authProxyUrl.includes(encodeURIComponent('https://idp.example.test/sso?state=abc')),
+        'Auth URL should carry the external SSO target',
+    );
+    assert.ok(handoff.html.includes('Continue n8n sign-in in your browser'), 'Handoff page should explain the browser sign-in step');
+});
+
+test('ProxyService: external auth redirects remain proxied until n8n callback returns', () => {
+    const { ProxyService } = require('../../src/services/proxy-service.js');
+    const service = new ProxyService();
+    (service as any).target = 'https://n8n.example.test';
+    service.setPublicBaseUrl('https://code.example.test/proxy/25444');
+    const token = (service as any).createExternalAuthSession('https://idp.example.test/login');
+
+    const nextIdpUrl = (service as any).rewriteProxyLocation(
+        '/oauth/authorize?next=1',
+        'https://idp.example.test/login',
+        token,
+    );
+    assert.ok(
+        nextIdpUrl.startsWith('https://code.example.test/proxy/25444/__n8nac-external-auth/'),
+        'Relative IdP redirects should continue through the auth proxy',
+    );
+    assert.ok(
+        nextIdpUrl.includes(encodeURIComponent('https://idp.example.test/oauth/authorize?next=1')),
+        'Relative IdP redirects should resolve against the current IdP origin',
+    );
+    assert.ok(
+        (service as any).rewriteProxyLocation('//idp.example.test/factor', 'https://idp.example.test/login', token)
+            .includes(encodeURIComponent('https://idp.example.test/factor')),
+        'Protocol-relative IdP redirects should remain in the auth proxy flow',
+    );
+    const absoluteIdpUrl = (service as any).rewriteProxyLocation(
+        'https://idp.example.test/consent?step=2',
+        'https://idp.example.test/login',
+        token,
+    );
+    assert.ok(
+        absoluteIdpUrl.startsWith('https://code.example.test/proxy/25444/__n8nac-external-auth/'),
+        'Absolute IdP redirects should continue through the auth proxy',
+    );
+    assert.ok(
+        absoluteIdpUrl.includes(encodeURIComponent('https://idp.example.test/consent?step=2')),
+        'Absolute IdP redirects should carry the exact IdP URL',
+    );
+
+    assert.equal(
+        (service as any).rewriteProxyLocation('https://n8n.example.test/workflow/wf-1', 'https://idp.example.test/login', token),
+        'https://code.example.test/proxy/25444/workflow/wf-1',
+        'n8n callbacks should return to the normal workflow proxy route',
+    );
+});
+
+test('ProxyService: external auth tokens only proxy their expected target URL', () => {
+    const { ProxyService } = require('../../src/services/proxy-service.js');
+    const service = new ProxyService();
+    (service as any).target = 'https://n8n.example.test';
+    service.setPublicBaseUrl('https://code.example.test/proxy/25444');
+
+    const token = (service as any).createExternalAuthSession('https://idp.example.test/login?state=abc');
+
+    assert.deepEqual(
+        (service as any).parseExternalAuthProxyRequest(`/__n8nac-external-auth/${token}?url=${encodeURIComponent('https://idp.example.test/login?state=abc')}`),
+        { token, targetUrl: 'https://idp.example.test/login?state=abc' },
+    );
+    assert.equal(
+        (service as any).parseExternalAuthProxyRequest(`/__n8nac-external-auth/${token}?url=${encodeURIComponent('https://evil.example.test/steal')}`),
+        undefined,
+        'A valid token must not be reusable for arbitrary external URLs',
+    );
+
+    const nextUrl = (service as any).rewriteProxyLocation('https://idp.example.test/consent', 'https://idp.example.test/login?state=abc', token);
+    assert.ok(nextUrl.includes(encodeURIComponent('https://idp.example.test/consent')), 'Trusted redirects advance the expected target URL');
+    assert.equal(
+        (service as any).parseExternalAuthProxyRequest(`/__n8nac-external-auth/${token}?url=${encodeURIComponent('https://idp.example.test/login?state=abc')}`),
+        undefined,
+        'The previous IdP URL should no longer be accepted after the redirect target advances',
+    );
+    assert.deepEqual(
+        (service as any).parseExternalAuthProxyRequest(`/__n8nac-external-auth/${token}?url=${encodeURIComponent('https://idp.example.test/consent')}`),
+        { token, targetUrl: 'https://idp.example.test/consent' },
+    );
+});
+
+test('ProxyService: external auth handoff retries the last workflow URL', () => {
+    const { ProxyService } = require('../../src/services/proxy-service.js');
+    const service = new ProxyService();
+    (service as any).target = 'https://n8n.example.test';
+    (service as any).port = 25444;
+    service.setPublicBaseUrl('https://code.example.test/proxy/25444');
+
+    (service as any).rememberWorkflowProxyUrl('/workflow/wf-1?_n8nacBridge=123');
+    const retryFromMemory = (service as any).getWorkflowRetryUrl({
+        url: '/sso/saml/login',
+        headers: {},
+    });
+    assert.equal(
+        retryFromMemory,
+        'https://code.example.test/proxy/25444/workflow/wf-1?_n8nacBridge=123',
+        'Retry should prefer the remembered workflow URL over the SSO endpoint',
+    );
+
+    const retryFromReferrer = (service as any).getWorkflowRetryUrl({
+        url: '/sso/saml/login',
+        headers: {
+            referer: 'https://code.example.test/proxy/25444/workflow/wf-2?_n8nacBridge=456',
+        },
+    });
+    assert.equal(
+        retryFromReferrer,
+        'https://code.example.test/proxy/25444/workflow/wf-2?_n8nacBridge=456',
+        'Retry should use a workflow referrer when available',
+    );
+});
+
 // ── 3 : parent webview HTML — grant token & rate-limit markers ──────────────
 // buildWebviewHtml is a pure function (no vscode dependency) that generates
 // the parent-webview HTML. We assert on the security-relevant parts of the
@@ -229,6 +397,47 @@ test('Parent webview HTML: validates event.origin against iframeOrigin', () => {
 
     assert.ok(html.includes('iframeOrigin'), 'Must declare iframeOrigin');
     assert.ok(html.includes('event.origin !== iframeOrigin'), 'Must reject messages from unknown origins');
+});
+
+test('Parent webview HTML: relays iframe popup requests after origin validation', () => {
+    const { buildWebviewHtml } = require('../../src/ui/webview-html.js');
+    const html: string = buildWebviewHtml('wf-1', 'http://localhost:5678/workflow/wf-1');
+
+    assert.ok(html.includes("message.type === 'n8n-open-external'"), 'Must handle popup bridge messages');
+    assert.ok(html.includes("message.type === 'n8n-external-navigation'"), 'Must handle source-rich navigation bridge messages');
+    assert.ok(html.includes('function isActiveFrameEvent(event)'), 'Must centralize active iframe validation for popup relays');
+    assert.ok(html.includes('event.origin === iframeOrigin'), 'Must validate iframe origin before relaying popup URLs');
+    assert.ok(html.includes('event.source === activeFrame.contentWindow'), 'Must reject popup requests from stale hidden iframes');
+    assert.ok(html.includes("if (!isActiveFrameEvent(event)) return;"), 'Must require an active iframe event before relaying popup URLs');
+    assert.ok(html.includes('postN8nExternalNavigation(message.url'), 'Must relay popup URL to the extension host through the shared bridge');
+    assert.ok(html.includes('resolveN8nExternalNavigationUrl'), 'Must normalize relative iframe URLs before host relay');
+    assert.ok(html.includes('url: normalizedUrl'), 'Must relay the normalized absolute URL to the extension host');
+    assert.ok(html.includes("type: 'open-external'"), 'Must use the host open-external message contract');
+});
+
+test('Parent webview HTML: escapes iframe URL attributes', () => {
+    const { buildWebviewHtml } = require('../../src/ui/webview-html.js');
+    const html: string = buildWebviewHtml('wf-1', 'http://localhost:5678/workflow/wf-1" onload="alert(1)&x=<tag>');
+
+    assert.ok(!html.includes('src="http://localhost:5678/workflow/wf-1" onload='), 'Iframe src must not allow attribute breakout');
+    assert.ok(html.includes('&quot; onload=&quot;alert(1)&amp;x=&lt;tag&gt;'), 'Iframe src must be HTML-escaped');
+});
+
+test('Parent webview HTML: opens prepared Form Trigger test URL when n8n waits for form submission', () => {
+    const { buildWebviewHtml } = require('../../src/ui/webview-html.js');
+    const html: string = buildWebviewHtml(
+        'wf-1',
+        'http://localhost:5678/workflow/wf-1',
+        'http://localhost:5678/form-test/form-path',
+    );
+
+    assert.ok(html.includes("message.type === 'n8n-form-test-ready'"), 'Must listen for Form Trigger readiness messages');
+    assert.ok(html.includes('FORM_TEST_OPEN_COOLDOWN_MS'), 'Must use bounded duplicate suppression for form test openings');
+    assert.ok(html.includes('function claimFormTestOpen(url)'), 'Must allow later form test openings after the cooldown');
+    assert.ok(!html.includes('_formTestOpened'), 'Must not permanently suppress subsequent form test openings');
+    assert.ok(html.includes('http://localhost:5678/form-test/form-path'), 'Must embed the prepared form test URL');
+    assert.ok(html.includes("postN8nExternalNavigation(formTestUrl, 'form-trigger', message);"), 'Must ask the extension host to open the form externally');
+    assert.ok(html.includes('workflowEndpoints'), 'Must embed endpoint metadata for generalized trigger handling');
 });
 
 test('Parent webview HTML: does not embed a static NONCE', () => {
@@ -262,6 +471,8 @@ test('Parent webview HTML: seamless reload forces iframe navigation', () => {
     const { buildWebviewHtml } = require('../../src/ui/webview-html.js');
     const html: string = buildWebviewHtml('wf-1', 'http://localhost:5678/workflow/wf-1');
 
+    assert.ok(html.includes('message.type === "n8nac.workflow.reload"'), 'Reload command must use a namespaced extension message');
+    assert.ok(!html.includes("message.type === 'reload'"), 'Generic iframe reload messages must not trigger a parent reload');
     assert.ok(html.includes('_n8nacRefresh'), 'Reload must add a cache-busting query param');
     assert.ok(html.includes('pendingFrame.src = reloadUrl.toString()'), 'Reload must assign a fresh iframe URL');
 });

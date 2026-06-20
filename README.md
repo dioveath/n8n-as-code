@@ -29,8 +29,6 @@
 
 ---
 
-> **Using V1?** V2+ uses workspace environments. Start with the [migration guide](https://n8nascode.dev/docs/migration/v1-to-v2/) and run `n8nac workspace migrate --json` from the repository root before applying with `n8nac workspace migrate --write`. V1 users can keep using the legacy branch and packages: [V1 branch](https://github.com/EtienneLescot/n8n-as-code/tree/v1) · CLI: `npx --yes n8nac@v1 <command>` · Claude Code: `/plugin marketplace add https://github.com/EtienneLescot/n8n-as-code#v1`.
-
 > **n8n version compatibility** — The node schema bundled with n8n-as-code is built against the latest stable release of n8n. Keep your n8n instance up to date for best generation and validation results.
 
 > **Independent project** — n8n-as-code is an independent community project and is not affiliated with, endorsed by, or sponsored by n8n.
@@ -95,7 +93,7 @@ If your agent asks for an explicit skill path, use `skills/n8n-architect`.
 Create a workspace environment for an existing n8n URL:
 
 ```bash
-npx --yes n8nac env add Dev --base-url https://n8n.example.com --sync-folder workflows/dev
+npx --yes n8nac env add Dev --base-url https://n8n.example.com --workflows-path workflows/dev
 printf '%s' "$N8N_API_KEY" | npx --yes n8nac env auth set Dev --api-key-stdin
 npx --yes n8nac env use Dev
 npx --yes n8nac update-ai
@@ -105,7 +103,7 @@ Or attach a local managed instance:
 
 ```bash
 n8n-manager instance list
-npx --yes n8nac env add Local --managed-instance <id> --sync-folder workflows/local
+npx --yes n8nac env add Local --managed-instance <id> --workflows-path workflows/local
 npx --yes n8nac env use Local
 ```
 
@@ -115,7 +113,10 @@ Then sync workflows explicitly:
 npx --yes n8nac list
 npx --yes n8nac pull <workflow-id>
 npx --yes n8nac push workflows/dev/my-workflow.workflow.ts --verify
+npx --yes n8nac promote --from Dev --to Prod --dry-run
 ```
+
+Use `promote` to move workflow source from one environment `workflowsPath` to another. Pass a workflow path for a single workflow, or omit it to promote every `*.workflow.ts` file in the source environment, including nested folders. Promotion rewrites target project metadata, remaps credentials and supported Execute Workflow references, records stable source-to-target bindings in `n8nac-promotion.json`, and pushes by default unless `--no-push` is set. `--dry-run` performs discovery for an accurate create/update plan, but does not write files, push, or update the promotion config.
 
 [CLI guide](https://n8nascode.dev/docs/usage/cli/) · [n8n-manager guide](https://n8nascode.dev/docs/usage/n8n-manager/)
 
@@ -125,8 +126,8 @@ npx --yes n8nac push workflows/dev/my-workflow.workflow.ts --verify
 
 ```bash
 n8nac env list
-n8nac env add Dev --base-url <url> --sync-folder workflows/dev
-n8nac env add Local --managed-instance <id> --sync-folder workflows/local
+n8nac env add Dev --base-url <url> --workflows-path workflows/dev
+n8nac env add Local --managed-instance <id> --workflows-path workflows/local
 n8nac env use Dev
 n8nac env auth set Dev --api-key-stdin
 n8nac env remove Dev
@@ -134,15 +135,14 @@ n8nac env remove Dev
 
 Use `n8nac env` for everything that describes how this repository connects to n8n.
 
-### Workspace Maintenance: `n8nac workspace`
+### Workspace Inspection: `n8nac workspace`
 
 ```bash
-n8nac workspace status
-n8nac workspace migrate --json
-n8nac workspace migrate --write
+n8nac workspace status --json
+n8nac env status --json
 ```
 
-Use `workspace migrate --json` as the migration dry-run. It reports one unified `operations` list for legacy workspace and global instance changes; apply all required operations together with `workspace migrate --write`.
+Use `env status --json` as the source of truth for active environment readiness.
 
 ### Managed Local Instances: `n8n-manager`
 
@@ -157,21 +157,6 @@ n8n-manager tunnel stop <id>
 ```
 
 Use `n8n-manager` only for local managed instances and machine-local operations. Do not use it as the workspace source of truth.
-
-### Hidden Compatibility
-
-Older commands can remain callable for compatibility but are not the primary model:
-
-```bash
-n8nac instance-target ...
-n8nac target ...
-n8nac setup ...
-n8nac setup-modes ...
-n8nac workspace pin-instance ...
-n8nac workspace set-sync-folder ...
-```
-
-New docs and user flows should prefer `n8nac env`.
 
 ## GitOps For n8n
 
@@ -248,6 +233,10 @@ n8nac convert-batch workflows/ --format typescript
 - **`n8nac workspace`**: readiness and unified workspace migration.
 - **`n8n-manager`**: local managed instances, Docker lifecycle, tunnels, and machine-local secrets.
 - **Skills and MCP**: grounded n8n knowledge for agents.
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=EtienneLescot/n8n-as-code&type=date&legend=top-left)](https://www.star-history.com/#EtienneLescot/n8n-as-code&type=date&legend=top-left)
 
 ## Contributing
 

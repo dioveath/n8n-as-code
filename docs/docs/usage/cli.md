@@ -42,9 +42,8 @@ npm uninstall -g @n8n-as-code/cli
 | Group | Command | Purpose |
 |---|---|---|
 | Primary Usage | `n8nac env` | Workspace environments |
-| Workspace Maintenance | `n8nac workspace` | Readiness and unified workspace migration |
+| Workspace Inspection | `n8nac workspace` | V4 workspace snapshot |
 | Managed Local Instances | `n8n-manager` | Local managed instances and tunnels |
-| Hidden Compatibility | `instance-target`, `target`, `setup`, old `workspace` mutations | Compatibility only |
 
 For a compact overview, see the [Command Glossary](/docs/usage/commands).
 
@@ -53,7 +52,7 @@ For a compact overview, see the [Command Glossary](/docs/usage/commands).
 ### Remote n8n environment
 
 ```bash
-n8nac env add Dev --base-url https://n8n.example.com --sync-folder workflows/dev
+n8nac env add Dev --base-url https://n8n.example.com --workflows-path workflows/dev
 n8nac env auth set Dev --api-key-stdin
 n8nac env use Dev
 n8nac update-ai
@@ -63,7 +62,7 @@ n8nac update-ai
 
 ```bash
 n8n-manager instance list
-n8nac env add Local --managed-instance <id> --sync-folder workflows/local
+n8nac env add Local --managed-instance <id> --workflows-path workflows/local
 n8nac env use Local
 n8nac update-ai
 ```
@@ -83,8 +82,8 @@ Use `env` for normal workspace configuration.
 ```bash
 n8nac env list
 n8nac env status
-n8nac env add Dev --base-url <url> --sync-folder workflows/dev
-n8nac env add Local --managed-instance <id> --sync-folder workflows/local
+n8nac env add Dev --base-url <url> --workflows-path workflows/dev
+n8nac env add Local --managed-instance <id> --workflows-path workflows/local
 n8nac env use Dev
 n8nac env auth set Dev --api-key-stdin
 n8nac env remove Dev
@@ -95,7 +94,7 @@ n8nac env remove Dev
 Remote environments store the URL in `n8nac-config.json`, but the API key stays local.
 
 ```bash
-n8nac env add Staging --base-url https://staging.example.com --sync-folder workflows/staging
+n8nac env add Staging --base-url https://staging.example.com --workflows-path workflows/staging
 n8nac env auth set Staging --api-key-stdin
 ```
 
@@ -105,22 +104,19 @@ These workspace environments reference a local `n8n-manager` instance.
 
 ```bash
 n8n-manager instance list
-n8nac env add Local --managed-instance <id> --sync-folder workflows/local
+n8nac env add Local --managed-instance <id> --workflows-path workflows/local
 ```
 
 The workspace does not copy Docker paths, tunnel state, logs, or local secrets.
 
 ## `workspace`
 
-Use `workspace` for inspection and explicit migrations only.
+Use `workspace` for inspection. Use `env status` for effective runtime readiness.
 
 ```bash
-n8nac workspace status
-n8nac workspace migrate --json
-n8nac workspace migrate --write
+n8nac workspace status --json
+n8nac env status --json
 ```
-
-`migrate --json` is the dry-run for legacy config models and reports one unified `operations` list. `migrate --write` applies all required migration operations together.
 
 ## Sync Commands
 
@@ -168,6 +164,96 @@ n8nac push workflows/dev/my-workflow.workflow.ts --verify
 ```
 
 Push uploads one local workflow and uses optimistic concurrency checks.
+
+### `promote`
+
+```bash
+n8nac promote workflows/dev/my-workflow.workflow.ts --from Dev --to Prod --dry-run
+n8nac promote workflows/dev/my-workflow.workflow.ts --from Dev --to Prod
+n8nac promote --from Dev --to Prod --dry-run
+n8nac promote --from Dev --to Prod --no-push
+n8nac promote --from Dev --to Prod --promotion-config config/promotion.json --json
+```
+
+Promote copies TypeScript workflows from one workspace environment to another, adapts them for the target environment, and pushes them to n8n unless `--no-push` is used.
+
+The positional path is optional:
+
+- With a path, `promote` handles one `*.workflow.ts` file inside the source environment `workflowsPath`.
+- Without a path, `promote` recursively finds all non-hidden `*.workflow.ts` files in the source environment `workflowsPath` and preserves their relative paths in the target environment.
+
+Promotion adapts workflows before writing or pushing:
+
+- target project metadata is rewritten to the target environment project
+- source workflow IDs and archived/home-project metadata are removed for new target workflows
+- known target workflow IDs are reused for updates
+- credential references are remapped by saved binding, explicit override, or unique target credential match by type and name
+- supported Execute Workflow references are remapped by saved binding, source workflow relation, explicit override, or unique target workflow name match
+
+Promotion stores discovered source-to-target bindings in `n8nac-promotion.json` by default. Existing bindings are reused first, target inventory discovery is used for initial create/update planning, and missing or ambiguous references block promotion before push.
+
+Options:
+
+| Option | Effect |
+|---|---|
+| `--from <environment>` | Source environment name or ID |
+| `--to <environment>` | Target environment name or ID |
+| `--dry-run` | Show the planned promotion without writing workflow files, pushing, or saving bindings |
+| `--no-push` | Write adapted files to the target `workflowsPath` without pushing them to n8n |
+| `--overwrite` | Replace an existing local target file when no target workflow ID is known |
+| `--promotion-config <path>` | Read and write promotion bindings from a custom config path |
+| `--json` | Print the promotion result as JSON |
+
+`--dry-run` still reads the target workflow inventory so the plan can report `create` vs `update` accurately. It does not write local workflow files, call push, or update `n8nac-promotion.json`.
+
+The promotion config has a stable v1 shape:
+
+```json
+{
+  "version": 1,
+  "routes": {
+    "Dev->Prod": {
+      "bindings": {
+        "workflows": {
+          "source-workflow-id": "target-workflow-id"
+        },
+        "credentials": {
+          "source-credential-id": "target-credential-id"
+        }
+      },
+      "workflowOverrides": {},
+      "credentialOverrides": {},
+      "nameRules": []
+    }
+  }
+}
+```
+
+Use overrides when a target name is ambiguous or intentionally different:
+
+```json
+{
+  "version": 1,
+  "routes": {
+    "Dev->Prod": {
+      "workflowOverrides": {
+        "source-workflow-id": { "targetId": "prod-workflow-id" },
+        "Source Workflow Name": { "targetName": "Production Workflow Name" }
+      },
+      "credentialOverrides": {
+        "httpBasicAuth::source-credential-id": { "targetId": "prod-credential-id" },
+        "httpBasicAuth::Shared Credential": { "targetName": "Production Credential" }
+      },
+      "nameRules": [
+        { "kind": "workflow", "from": " Dev$", "to": " Prod" },
+        { "kind": "credential", "from": " Dev$", "to": " Prod" }
+      ]
+    }
+  }
+}
+```
+
+Promotion does not create credentials in the target environment. Create or map target credentials first, or use `n8nac credentials ...` helpers. After a pushed single-workflow promotion, the CLI prints a `workflow credential-required` command so you can check target credential readiness.
 
 ### `resolve`
 
@@ -249,7 +335,7 @@ Current config is environment-based and safe to commit when it contains no secre
       "environmentTargetId": "dev",
       "projectId": "personal",
       "projectName": "Personal",
-      "syncFolder": "workflows/dev"
+      "workflowsPath": "workflows/dev"
     }
   ],
   "environmentTargets": [
@@ -264,6 +350,8 @@ Current config is environment-based and safe to commit when it contains no secre
 ```
 
 API keys are stored locally with `n8nac env auth set <env> --api-key-stdin`.
+
+`workflowsPath` is generated from the environment name when the environment is created. It is stable after creation, so changing the environment display name, target instance, or target project does not move the workflow directory. When `workflowsPath` is changed explicitly, n8nac moves existing workflow files to the new directory when the destination is empty.
 
 In config examples, `kind: "external-instance"` is the persisted target kind for a remote n8n URL. Prefer the user-facing term "remote n8n environment" outside raw config discussions.
 
@@ -281,28 +369,14 @@ n8nac push workflows/staging/my-workflow.workflow.ts --verify
 
 For multiple remote environments, create one environment per target and switch with `n8nac env use <name>`.
 
-## Compatibility Commands
-
-These commands may remain callable for old scripts, but new docs and workflows should not use them as primary setup:
-
-```bash
-n8nac instance-target ...
-n8nac target ...
-n8nac setup ...
-n8nac setup-modes ...
-n8nac workspace pin-instance ...
-n8nac workspace set-sync-folder ...
-n8nac workspace set-project ...
-```
-
 ## Troubleshooting
 
 Check the active context:
 
 ```bash
 n8nac env list
-n8nac env status
-n8nac workspace migrate --json
+n8nac env status --json
+n8nac workspace status --json
 ```
 
 Refresh a remote API key:

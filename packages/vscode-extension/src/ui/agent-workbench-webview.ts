@@ -4,6 +4,11 @@ import { IWorkflowStatus } from 'n8nac';
 import { AgentRuntimeController, type AgentWorkbenchMessage, type AgentWorkflowContext } from '../services/agent-runtime-controller.js';
 import { workflowWebviewRegistry } from '../services/workflow-webview-registry.js';
 import { buildAgentWorkbenchHtml } from './agent-workbench-html.js';
+import { readAgentProviderSettings } from '../services/agent-provider-settings.js';
+import { getReasoningOptions } from '../services/agent-provider-capabilities.js';
+import type { WorktreeInfo } from '../services/worktree-service.js';
+import { openExternalNavigation } from '../utils/external-navigation.js';
+import type { WorkflowWebviewEndpoints } from '../services/workflow-webview-context.js';
 
 interface AgentWorkbenchNodeContext {
     name: string;
@@ -16,20 +21,27 @@ interface AgentWorkflowTarget {
     workflowFilePath?: string;
     workflowUrl?: string;
     workflowReloadUrl?: string;
+    workflowEndpoints?: WorkflowWebviewEndpoints;
 }
 
 interface AgentWorkbenchWorkflowProviders {
     listWorkflows(): Promise<IWorkflowStatus[]>;
+    listWorkflowOptions(): Promise<AgentWorkflowContext[]>;
     resolveWorkflow(workflow: AgentWorkflowContext): Promise<AgentWorkflowTarget>;
     listWorkflowNodes(workflow: AgentWorkflowContext): Promise<AgentWorkbenchNodeContext[]>;
     listProviderOptions(): Promise<Array<Record<string, unknown>>>;
     listModelOptions(provider: string): Promise<Array<Record<string, unknown>>>;
     selectProviderModel(provider: string, model: string): Promise<void>;
     selectReasoningEffort(effort: string): Promise<void>;
+    listWorktrees(): Promise<WorktreeInfo[]>;
+    createWorktree(options?: { branchName?: string }): Promise<WorktreeInfo | undefined>;
+    removeWorktree(worktreePath: string): Promise<void>;
 }
 
 export class AgentWorkbenchWebview {
-    public static currentPanel: AgentWorkbenchWebview | undefined;
+    private static readonly _panels = new Map<string, AgentWorkbenchWebview>();
+    private static _lastActiveSessionId: string | undefined;
+    private static _clipboardPasteHandler: ((panel: vscode.WebviewPanel, grantToken: string) => Promise<void>) | undefined;
 
     private readonly _panel: vscode.WebviewPanel;
     private readonly _context: vscode.ExtensionContext;
@@ -41,11 +53,12 @@ export class AgentWorkbenchWebview {
     private _workflowFilePath: string | undefined;
     private _workflowUrl: string | undefined;
     private _workflowReloadUrl: string | undefined;
+    private _workflowEndpoints: WorkflowWebviewEndpoints | undefined;
     private _providerModelLabel: string;
     private _nodeContexts: AgentWorkbenchNodeContext[] = [];
     private _workflowProviders: AgentWorkbenchWorkflowProviders;
     private _activeSessionId: string | undefined;
-    private _onClipboardPasteRequest: ((panel: vscode.WebviewPanel, grantToken: string) => Promise<void>) | undefined;
+    private _stateSequence = 0;
 
     private constructor(
         panel: vscode.WebviewPanel,
@@ -54,6 +67,7 @@ export class AgentWorkbenchWebview {
         workflowFilePath: string | undefined,
         workflowUrl: string | undefined,
         workflowReloadUrl: string | undefined,
+        workflowEndpoints: WorkflowWebviewEndpoints | undefined,
         providerModelLabel: string,
         agentRuntime: AgentRuntimeController,
         outputChannel: vscode.OutputChannel,
@@ -66,6 +80,7 @@ export class AgentWorkbenchWebview {
         this._workflowFilePath = workflowFilePath;
         this._workflowUrl = workflowUrl;
         this._workflowReloadUrl = workflowReloadUrl;
+        this._workflowEndpoints = workflowEndpoints;
         this._providerModelLabel = providerModelLabel;
         this._agentRuntime = agentRuntime;
         this._outputChannel = outputChannel;
@@ -75,7 +90,15 @@ export class AgentWorkbenchWebview {
 
         this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
         this._panel.onDidChangeViewState((event) => {
-            if (event.webviewPanel.visible) {
+            const isVisible = event.webviewPanel.visible;
+            void this._panel.webview.postMessage({
+                type: 'panel.visibility',
+                visible: isVisible,
+            });
+            if (event.webviewPanel.active && this._activeSessionId) {
+                AgentWorkbenchWebview._lastActiveSessionId = this._activeSessionId;
+            }
+            if (isVisible) {
                 void this.postWorkbenchState();
             }
         }, null, this._disposables);
@@ -95,6 +118,7 @@ export class AgentWorkbenchWebview {
         workflowFilePath: string | undefined,
         workflowUrl: string | undefined,
         workflowReloadUrl: string | undefined,
+        workflowEndpoints: WorkflowWebviewEndpoints | undefined,
         providerModelLabel: string,
         agentRuntime: AgentRuntimeController,
         outputChannel: vscode.OutputChannel,
@@ -104,12 +128,14 @@ export class AgentWorkbenchWebview {
     ): void {
         const column = viewColumn || vscode.ViewColumn.One;
 
-        if (AgentWorkbenchWebview.currentPanel) {
-            AgentWorkbenchWebview.currentPanel._panel.reveal(column);
-            AgentWorkbenchWebview.currentPanel._workflowProviders = workflowProviders;
-            AgentWorkbenchWebview.currentPanel._activeSessionId = initialSessionId || AgentWorkbenchWebview.currentPanel._activeSessionId;
-            AgentWorkbenchWebview.currentPanel.update(workflow, workflowFilePath, workflowUrl, workflowReloadUrl, providerModelLabel);
-            return;
+        if (initialSessionId) {
+            const existingPanel = AgentWorkbenchWebview._panels.get(initialSessionId);
+            if (existingPanel) {
+                existingPanel._panel.reveal(column);
+                existingPanel._workflowProviders = workflowProviders;
+                existingPanel.update(workflow, workflowFilePath, workflowUrl, workflowReloadUrl, workflowEndpoints, providerModelLabel);
+                return;
+            }
         }
 
         const panel = vscode.window.createWebviewPanel(
@@ -123,16 +149,22 @@ export class AgentWorkbenchWebview {
             },
         );
 
-        AgentWorkbenchWebview.currentPanel = new AgentWorkbenchWebview(panel, context, workflow, workflowFilePath, workflowUrl, workflowReloadUrl, providerModelLabel, agentRuntime, outputChannel, workflowProviders, initialSessionId);
-    }
-
-    public static onClipboardPasteRequest(handler: (panel: vscode.WebviewPanel, grantToken: string) => Promise<void>): void {
-        if (AgentWorkbenchWebview.currentPanel) {
-            AgentWorkbenchWebview.currentPanel._onClipboardPasteRequest = handler;
+        const workbench = new AgentWorkbenchWebview(panel, context, workflow, workflowFilePath, workflowUrl, workflowReloadUrl, workflowEndpoints, providerModelLabel, agentRuntime, outputChannel, workflowProviders, initialSessionId);
+        if (initialSessionId) {
+            AgentWorkbenchWebview._panels.set(initialSessionId, workbench);
+            AgentWorkbenchWebview._lastActiveSessionId = initialSessionId;
         }
     }
 
-    public update(workflow: IWorkflowStatus | undefined, workflowFilePath: string | undefined, workflowUrl: string | undefined, workflowReloadUrl: string | undefined, providerModelLabel: string, postState = true): void {
+    public static onClipboardPasteRequest(handler: (panel: vscode.WebviewPanel, grantToken: string) => Promise<void>): void {
+        AgentWorkbenchWebview._clipboardPasteHandler = handler;
+    }
+
+    public static getCurrentActiveSessionId(): string | undefined {
+        return AgentWorkbenchWebview._lastActiveSessionId;
+    }
+
+    public update(workflow: IWorkflowStatus | undefined, workflowFilePath: string | undefined, workflowUrl: string | undefined, workflowReloadUrl: string | undefined, workflowEndpoints: WorkflowWebviewEndpoints | undefined, providerModelLabel: string, postState = true): void {
         const hadWorkflowFrame = Boolean(this._workflow);
         const hasWorkflowFrame = Boolean(workflow);
         const hadWorkflowUi = Boolean(this._workflowUrl);
@@ -141,6 +173,7 @@ export class AgentWorkbenchWebview {
         this._workflowFilePath = workflowFilePath;
         this._workflowUrl = workflowUrl;
         this._workflowReloadUrl = workflowReloadUrl;
+        this._workflowEndpoints = workflowEndpoints;
         this._providerModelLabel = providerModelLabel;
         this.updateRegistryRegistration();
         this._panel.title = `n8n Agent: ${workflow?.name || 'New workflow'}`;
@@ -154,15 +187,25 @@ export class AgentWorkbenchWebview {
             type: 'workflow.update',
             workflowId: workflow?.id || '',
             workflowName: workflow?.name || 'New workflow',
+            workflowFilename: workflow?.filename || '',
+            workflowFilePath: workflowFilePath || '',
             url: workflowUrl,
             reloadUrl: workflowReloadUrl,
+            endpoints: workflowEndpoints || {},
+            formTestUrl: workflowEndpoints?.formTestUrl,
         });
         if (postState) void this.postWorkbenchState();
     }
 
     public dispose(): void {
-        if (AgentWorkbenchWebview.currentPanel === this) {
-            AgentWorkbenchWebview.currentPanel = undefined;
+        if (this._activeSessionId) {
+            // Only clean up map entries that this panel owns to avoid evicting sibling panels.
+            if (AgentWorkbenchWebview._panels.get(this._activeSessionId) === this) {
+                AgentWorkbenchWebview._panels.delete(this._activeSessionId);
+            }
+            if (AgentWorkbenchWebview._lastActiveSessionId === this._activeSessionId) {
+                AgentWorkbenchWebview._lastActiveSessionId = undefined;
+            }
         }
         this._registryDisposable?.dispose();
         this._registryDisposable = undefined;
@@ -200,15 +243,32 @@ export class AgentWorkbenchWebview {
         }
 
         if (payload.type === 'clipboard-paste-request' && typeof payload.grantToken === 'string') {
-            void this._onClipboardPasteRequest?.(this._panel, payload.grantToken)
+            void AgentWorkbenchWebview._clipboardPasteHandler?.(this._panel, payload.grantToken)
                 ?.catch(error => console.error('[AgentWorkbench] Clipboard paste handler error', error));
             return;
         }
 
-        if (payload.type === 'agent.send') {
+        if (payload.type === 'open-external' && typeof payload.url === 'string') {
+            await openExternalNavigation({
+                url: payload.url,
+                reason: typeof payload.reason === 'string' ? payload.reason : 'unknown',
+                source: {
+                    ...(payload.source && typeof payload.source === 'object' ? payload.source : {}),
+                    panelKind: 'agent-workbench',
+                    workflowId: this._workflow?.id,
+                    workflowName: this._workflow?.name,
+                    sessionId: this._activeSessionId,
+                },
+                target: typeof payload.target === 'string' ? payload.target : undefined,
+                features: typeof payload.features === 'string' ? payload.features : undefined,
+            }, { outputChannel: this._outputChannel });
+            return;
+        }
+
+        if (payload.type === 'agent.send' || payload.type === 'agent.queue' || payload.type === 'agent.steer') {
             const nodeContexts = this.sanitizeNodeContexts(payload.nodeContexts) || this.sanitizeNodeContexts(payload.nodeContext) || this._nodeContexts;
-            this._outputChannel.appendLine(`[n8n-agent-debug] agent.send workflowId=${this._workflow?.id || 'none'} workflowFilePath=${this._workflowFilePath || 'none'} sessionId=${typeof payload.sessionId === 'string' ? payload.sessionId : 'none'}`);
-            const result = await this._agentRuntime.sendPrompt({
+            this._outputChannel.appendLine(`[n8n-agent-debug] ${payload.type} workflowId=${this._workflow?.id || 'none'} workflowFilePath=${this._workflowFilePath || 'none'} sessionId=${typeof payload.sessionId === 'string' ? payload.sessionId : 'none'}`);
+            const input = {
                 prompt: String(payload.text || ''),
                 workflowId: this._workflow?.id,
                 workflowName: this._workflow?.name,
@@ -218,8 +278,11 @@ export class AgentWorkbenchWebview {
                 nodeContext: nodeContexts[0],
                 nodeContexts,
                 sessionId: typeof payload.sessionId === 'string' ? payload.sessionId : undefined,
-            }, (event) => this.postAgentRuntimeMessage(event));
-            this._outputChannel.appendLine(`[n8n-agent-debug] agent.send completed workflowId=${this._workflow?.id || 'none'} workflowChanged=${String(result.workflowChanged)}`);
+            };
+            const result = payload.type === 'agent.send'
+                ? await this._agentRuntime.sendPrompt(input, (event) => this.postAgentRuntimeMessage(event))
+                : await this._agentRuntime.queuePrompt(input, (event) => this.postAgentRuntimeMessage(event), payload.type === 'agent.steer' ? 'steer' : 'pending');
+            this._outputChannel.appendLine(`[n8n-agent-debug] ${payload.type} completed workflowId=${this._workflow?.id || 'none'} workflowChanged=${String(result.workflowChanged)}`);
             return;
         }
 
@@ -286,7 +349,8 @@ export class AgentWorkbenchWebview {
         }
 
         if (payload.type === 'agent.stop') {
-            await this._agentRuntime.stop((event) => this._panel.webview.postMessage(event));
+            const sessionId = typeof payload.sessionId === 'string' ? payload.sessionId : this._activeSessionId;
+            await this._agentRuntime.stop((event) => this._panel.webview.postMessage(event), sessionId);
             return;
         }
 
@@ -311,13 +375,19 @@ export class AgentWorkbenchWebview {
                     nodeContext: undefined,
                     nodeContexts: undefined,
                 };
-            await this.postWorkbenchState(await this._agentRuntime.createSession(input));
+            const state = await this._agentRuntime.createSession(input);
+            await vscode.commands.executeCommand('n8n.openAgentWorkbench', { sessionId: state.activeSessionId, workflow });
             return;
         }
 
         if (payload.type === 'agent.session.select' && typeof payload.sessionId === 'string') {
-            this._activeSessionId = payload.sessionId;
-            await this.postWorkbenchState(await this._agentRuntime.selectSession(payload.sessionId, this.buildWorkbenchInput()));
+            const sessionId = payload.sessionId;
+            const existingPanel = AgentWorkbenchWebview._panels.get(sessionId);
+            if (existingPanel) {
+                existingPanel._panel.reveal();
+            } else {
+                await vscode.commands.executeCommand('n8n.openAgentWorkbench', { sessionId });
+            }
             return;
         }
 
@@ -327,7 +397,22 @@ export class AgentWorkbenchWebview {
         }
 
         if (payload.type === 'agent.session.delete' && typeof payload.sessionId === 'string') {
-            await this.postWorkbenchState(await this._agentRuntime.deleteSession(payload.sessionId, this.buildWorkbenchInput()));
+            const sessionId = payload.sessionId;
+            const confirmed = await vscode.window.showWarningMessage(
+                'Delete this conversation? This cannot be undone.',
+                { modal: true },
+                'Delete',
+            );
+            if (confirmed !== 'Delete') return;
+            const deletedPanel = AgentWorkbenchWebview._panels.get(sessionId);
+            const state = await this._agentRuntime.deleteSession(sessionId, this.buildWorkbenchInput());
+            if (AgentWorkbenchWebview._panels.get(sessionId) === deletedPanel) {
+                AgentWorkbenchWebview._panels.delete(sessionId);
+            }
+            if (deletedPanel && deletedPanel !== this) {
+                deletedPanel.dispose();
+            }
+            await this.postWorkbenchState(state);
             return;
         }
 
@@ -338,6 +423,13 @@ export class AgentWorkbenchWebview {
 
         if (payload.type === 'agent.session.detach' && typeof payload.sessionId === 'string') {
             await this.postWorkbenchState(await this._agentRuntime.detachSession(payload.sessionId, this.buildWorkbenchInput()));
+            return;
+        }
+
+        if (payload.type === 'agent.message.rewind' && typeof payload.sessionId === 'string' && typeof payload.messageId === 'string') {
+            const result = await this._agentRuntime.rewindToUserMessage(payload.sessionId, payload.messageId, this.buildWorkbenchInput());
+            await this.postWorkbenchState(result.state);
+            await this._panel.webview.postMessage({ type: 'agent.messageRewind', prompt: result.prompt });
             return;
         }
 
@@ -364,7 +456,7 @@ export class AgentWorkbenchWebview {
                     type: 'progress',
                     tone: 'info',
                     title: 'Compacting context',
-                    detail: 'Requesting runtime context compaction from Yagr.',
+                    detail: 'Requesting runtime context compaction',
                     phase: 'compaction',
                 },
             });
@@ -386,6 +478,90 @@ export class AgentWorkbenchWebview {
             } finally {
                 await this._panel.webview.postMessage({ type: 'agent.status', status: 'idle' });
             }
+            return;
+        }
+
+        if (payload.type === 'agent.worktree.list') {
+            try {
+                const allWorktrees = await this._workflowProviders.listWorktrees();
+                const mainWorkspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+                const worktrees = allWorktrees.filter((wt) => wt.path !== mainWorkspacePath);
+                const activePath = this._agentRuntime.getActiveWorktreePath(this._activeSessionId);
+                await this._panel.webview.postMessage({
+                    type: 'agent.worktrees',
+                    worktrees,
+                    activePath,
+                });
+            } catch (error: any) {
+                this._outputChannel.appendLine(`[n8n-agent] Worktree list error: ${error?.message || String(error)}`);
+            }
+            return;
+        }
+
+        if (payload.type === 'agent.worktree.select' && typeof payload.path === 'string') {
+            try {
+                const worktrees = await this._workflowProviders.listWorktrees();
+                const isKnown = worktrees.some((wt) => wt.path === payload.path);
+                if (!isKnown) {
+                    this._outputChannel.appendLine(`[n8n-agent] Worktree select refused: unknown path=${payload.path}`);
+                    return;
+                }
+                await this._agentRuntime.setActiveWorktreePath(payload.path, this._activeSessionId);
+                this._outputChannel.appendLine(`[n8n-agent-debug] Worktree selected path=${payload.path}`);
+                await this.postWorkbenchState();
+            } catch (error: any) {
+                this._outputChannel.appendLine(`[n8n-agent] Worktree select error: ${error?.message || String(error)}`);
+            }
+            return;
+        }
+
+        if (payload.type === 'agent.worktree.create') {
+            const branchName = typeof payload.branchName === 'string' && payload.branchName ? payload.branchName : undefined;
+            try {
+                const worktree = await this._workflowProviders.createWorktree({ branchName });
+                if (worktree) {
+                    await this._agentRuntime.setActiveWorktreePath(worktree.path, this._activeSessionId);
+                    this._outputChannel.appendLine(`[n8n-agent-debug] Worktree created and selected path=${worktree.path}`);
+                }
+            } catch (error: any) {
+                const message = error?.message || String(error);
+                this._outputChannel.appendLine(`[n8n-agent] Worktree create error: ${message}`);
+                await this._panel.webview.postMessage({ type: 'agent.error', message: `Failed to create worktree: ${message}` });
+            }
+            await this.postWorkbenchState();
+            return;
+        }
+
+        if (payload.type === 'agent.worktree.clear') {
+            await this._agentRuntime.setActiveWorktreePath(undefined, this._activeSessionId);
+            this._outputChannel.appendLine('[n8n-agent-debug] Worktree cleared, back to current workspace');
+            await this.postWorkbenchState();
+            return;
+        }
+
+        if (payload.type === 'agent.worktree.remove' && typeof payload.path === 'string') {
+            const confirmed = await vscode.window.showWarningMessage(
+                'Delete this worktree? This will fail if it contains uncommitted changes.',
+                { modal: true },
+                'Delete',
+            );
+            if (confirmed !== 'Delete') return;
+
+            try {
+                const allowed = await this._workflowProviders.listWorktrees();
+                const isKnown = allowed.some((wt) => wt.path === payload.path);
+                if (!isKnown) {
+                    throw new Error('Refusing to remove unknown worktree path.');
+                }
+                await this._workflowProviders.removeWorktree(payload.path);
+                await this._agentRuntime.clearActiveWorktreePath(payload.path);
+                this._outputChannel.appendLine(`[n8n-agent-debug] Worktree removed path=${payload.path}`);
+            } catch (error: any) {
+                const message = error?.message || String(error);
+                this._outputChannel.appendLine(`[n8n-agent] Worktree remove error: ${message}`);
+                await this._panel.webview.postMessage({ type: 'agent.error', message: `Failed to remove worktree: ${message}` });
+            }
+            await this.postWorkbenchState();
             return;
         }
     }
@@ -438,15 +614,14 @@ export class AgentWorkbenchWebview {
     }
 
     private getProviderModelLabel(): string {
-        const config = vscode.workspace.getConfiguration('n8n.agent');
-        const provider = this.readSelectedProvider();
-        const model = String(config.get<string>('model') || '').trim();
+        const settings = readAgentProviderSettings(this._context.globalState);
+        const provider = settings.provider;
+        const model = settings.model || '';
         return model ? `${provider} / ${model}` : provider;
     }
 
     private readSelectedProvider(): string {
-        const config = vscode.workspace.getConfiguration('n8n.agent');
-        return String(config.get<string>('provider') || 'openai').trim() || 'openai';
+        return readAgentProviderSettings(this._context.globalState).provider;
     }
 
     private buildWorkbenchInput(): {
@@ -455,45 +630,94 @@ export class AgentWorkbenchWebview {
         workflowFilename?: string;
         workflowFilePath?: string;
         workspaceRoot?: string;
+        worktreePath?: string;
         nodeContext?: AgentWorkbenchNodeContext;
         nodeContexts?: AgentWorkbenchNodeContext[];
         sessionId?: string;
     } {
+        const activeWorktreePath = this._agentRuntime.getActiveWorktreePath(this._activeSessionId);
         return {
             workflowId: this._workflow?.id,
             workflowName: this._workflow?.name,
             workflowFilename: this._workflow?.filename,
             workflowFilePath: this._workflowFilePath,
-            workspaceRoot: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
+            workspaceRoot: activeWorktreePath || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
+            worktreePath: activeWorktreePath,
             nodeContext: this._nodeContexts[0],
             nodeContexts: this._nodeContexts,
             sessionId: this._activeSessionId,
         };
     }
 
-    private async postWorkbenchState(state?: Awaited<ReturnType<AgentRuntimeController['getWorkbenchState']>>): Promise<void> {
+    private async postWorkbenchState(
+        state?: Awaited<ReturnType<AgentRuntimeController['getWorkbenchState']>>,
+        options: { enrich?: boolean } = {},
+    ): Promise<void> {
+        const enrich = options.enrich !== false;
+        const stateSequence = ++this._stateSequence;
         const nextState = state ?? await this._agentRuntime.getWorkbenchState(this.buildWorkbenchInput());
-        this._activeSessionId = nextState.activeSessionId;
-        await this.reconcileWorkflowContext(nextState.workflowContext);
+        const oldSessionId = this._activeSessionId;
+        const newSessionId = nextState.activeSessionId;
+        this._activeSessionId = newSessionId;
         this._nodeContexts = Array.isArray(nextState.currentNodeContexts) ? nextState.currentNodeContexts : [];
+
+        if (oldSessionId && oldSessionId !== newSessionId) {
+            // Only remove the old entry if this panel still owns it (avoid evicting another panel).
+            if (AgentWorkbenchWebview._panels.get(oldSessionId) === this) {
+                AgentWorkbenchWebview._panels.delete(oldSessionId);
+            }
+        }
+        let ownsNewSession = false;
+        if (newSessionId) {
+            const existingOwner = AgentWorkbenchWebview._panels.get(newSessionId);
+            if (!existingOwner || existingOwner === this) {
+                // Only claim the session if it is unclaimed or already ours.
+                AgentWorkbenchWebview._panels.set(newSessionId, this);
+                ownsNewSession = true;
+            } else {
+                ownsNewSession = false;
+            }
+            if (this._panel.active && ownsNewSession) {
+                AgentWorkbenchWebview._lastActiveSessionId = newSessionId;
+            }
+        }
+        if (this._panel.active && !ownsNewSession && AgentWorkbenchWebview._lastActiveSessionId === oldSessionId) {
+            AgentWorkbenchWebview._lastActiveSessionId = undefined;
+        }
+        if (!enrich) {
+            await this._panel.webview.postMessage({ type: 'agent.state', state: nextState, stateSequence });
+            if (!nextState.isRunning) {
+                void this.postWorkbenchState(undefined, { enrich: true })
+                    .catch((error) => this._outputChannel.appendLine(`[n8n-agent] Background Workbench state enrichment failed: ${error?.message || String(error)}`));
+            }
+            return;
+        }
+        await this.reconcileWorkflowContext(nextState.workflowContext);
+
+        const activeWorktreePath = this._agentRuntime.getActiveWorktreePath(nextState.activeSessionId);
+        const allWorktrees = await this._workflowProviders.listWorktrees().catch(() => []);
+        const mainWorkspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        const availableWorktrees = allWorktrees.filter((wt) => wt.path !== mainWorkspacePath);
+        const activeWorktree = activeWorktreePath
+            ? availableWorktrees.find((wt) => wt.path === activeWorktreePath)
+            : undefined;
+
         const enrichedState = {
             ...nextState,
             availableWorkflows: await this.getWorkflowOptions(),
             availableNodes: await this.getWorkflowNodeOptions(),
             providerOptions: await this._workflowProviders.listProviderOptions().catch(() => []),
             modelOptions: await this._workflowProviders.listModelOptions(String(nextState.provider || '')).catch(() => []),
-            reasoningOptions: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'].map((effort) => ({
-                id: effort,
-                label: effort,
-                selected: effort === nextState.reasoningEffort,
-            })),
+            reasoningOptions: getReasoningOptions(String(nextState.provider || ''), nextState.model, nextState.reasoningEffort),
+            activeWorktree,
+            availableWorktrees,
         };
-        await this._panel.webview.postMessage({ type: 'agent.state', state: enrichedState });
+        await this._panel.webview.postMessage({ type: 'agent.state', state: enrichedState, stateSequence });
     }
 
     private async postAgentRuntimeMessage(message: AgentWorkbenchMessage): Promise<boolean> {
         if (message.type === 'agent.state') {
-            await this.postWorkbenchState(message.state);
+            await this.postWorkbenchState(message.state, { enrich: false });
             return true;
         }
         return this._panel.webview.postMessage(message);
@@ -502,7 +726,7 @@ export class AgentWorkbenchWebview {
     private async reconcileWorkflowContext(workflowContext: AgentWorkflowContext | undefined): Promise<void> {
         if (!workflowContext) {
             if (this._workflow || this._workflowUrl || this._workflowFilePath) {
-                this.update(undefined, undefined, undefined, undefined, this._providerModelLabel, false);
+                this.update(undefined, undefined, undefined, undefined, undefined, this._providerModelLabel, false);
             }
             return;
         }
@@ -517,16 +741,11 @@ export class AgentWorkbenchWebview {
             name: workflowContext.name,
             filename: workflowContext.filename || '',
         } as IWorkflowStatus);
-        this.update(workflow, target.workflowFilePath || workflowContext.filePath, target.workflowUrl, target.workflowReloadUrl, this._providerModelLabel, false);
+        this.update(workflow, target.workflowFilePath || workflowContext.filePath, target.workflowUrl, target.workflowReloadUrl, target.workflowEndpoints, this._providerModelLabel, false);
     }
 
     private async getWorkflowOptions(): Promise<AgentWorkflowContext[]> {
-        const workflows = await this._workflowProviders.listWorkflows().catch(() => []);
-        return workflows.map((workflow) => ({
-            id: workflow.id || undefined,
-            name: workflow.name || workflow.id || workflow.filename || 'Workflow',
-            filename: workflow.filename || undefined,
-        }));
+        return this._workflowProviders.listWorkflowOptions().catch(() => []);
     }
 
     private async getWorkflowNodeOptions(): Promise<AgentWorkbenchNodeContext[]> {
@@ -597,9 +816,12 @@ export class AgentWorkbenchWebview {
         return buildAgentWorkbenchHtml({
             workflowId: this._workflow?.id || '',
             workflowName: this._workflow?.name || 'New workflow',
+            workflowFilename: this._workflow?.filename,
+            workflowFilePath: this._workflowFilePath,
             workflowAttached: Boolean(this._workflow),
             workflowUrl: this._workflowUrl,
             workflowReloadUrl: this._workflowReloadUrl,
+            workflowEndpoints: this._workflowEndpoints,
             providerModelLabel: this._providerModelLabel,
         });
     }

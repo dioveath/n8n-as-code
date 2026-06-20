@@ -43,7 +43,7 @@ n8nac env auth set <environment> --api-key-stdin
 Create an environment:
 
 ```bash
-n8nac env add Dev --base-url <url> --sync-folder workflows/dev
+n8nac env add Dev --base-url <url> --workflows-path workflows/dev
 n8nac env auth set Dev --api-key-stdin
 n8nac env use Dev
 ```
@@ -52,7 +52,7 @@ Or attach a local managed instance:
 
 ```bash
 n8n-manager instance list
-n8nac env add Local --managed-instance <id> --sync-folder workflows/local
+n8nac env add Local --managed-instance <id> --workflows-path workflows/local
 n8nac env use Local
 ```
 
@@ -71,23 +71,15 @@ n8nac env use Local
 - Confirm the API key is valid.
 - Reopen the split view.
 
-### Migration banner appears
+### Unsupported workspace config version
 
-Use the explicit button in the extension or run:
+Only V4 workspace environment configs are supported. Recreate the workspace environment explicitly:
 
 ```bash
-n8nac workspace migrate --json
-n8nac workspace migrate --write
+n8nac env add Dev --base-url https://n8n.example.com --workflows-path workflows/dev
+n8nac env auth set Dev --api-key-stdin
+n8nac env use Dev
 n8nac env status --json
-```
-
-Review the dry-run `operations` list before applying. `workspace migrate --write` applies all required migration operations together.
-
-If the migration banner remains after applying, inspect the remaining migration plan:
-
-```bash
-n8nac workspace migrate --json
-n8nac workspace migrate --write
 ```
 
 ## Sync Issues
@@ -190,7 +182,7 @@ Back up workflows first, then recreate the environment:
 ```bash
 cp -r workflows workflows-backup-$(date +%Y%m%d)
 rm n8nac-config.json
-n8nac env add Dev --base-url <url> --sync-folder workflows/dev
+n8nac env add Dev --base-url <url> --workflows-path workflows/dev
 n8nac env auth set Dev --api-key-stdin
 n8nac env use Dev
 n8nac list

@@ -20,10 +20,10 @@ This guide gets you from an empty workspace to an agent-assisted n8n workflow lo
 | Group | Command | Use it for |
 |---|---|---|
 | Primary Usage | `n8nac env` | Workspace environments |
-| Workspace Maintenance | `n8nac workspace` | Readiness and unified workspace migration |
+| Workspace Inspection | `n8nac workspace` | V4 workspace snapshot |
 | Managed Local Instances | `n8n-manager` | Local managed instances and tunnels |
 
-An environment stores the workspace-safe context: n8n endpoint, project, sync folder, and active selection. API keys stay local.
+An environment stores the workspace-safe context: n8n endpoint, project, workflowsPath, and active selection. API keys stay local.
 
 ## Recommended: VS Code / Cursor
 
@@ -32,7 +32,7 @@ An environment stores the workspace-safe context: n8n endpoint, project, sync fo
 3. Open the `n8n` view.
 4. Run **n8n: Configure**.
 5. In **n8n environments**, choose `Enter URL and API key` for a remote n8n environment or select a local managed instance.
-6. Choose the project and sync folder.
+6. Choose the project and workflows path.
 7. Save the environment.
 
 After that, use the sidebar to pull workflows or create a local workflow file, then ask the Agent Workbench for the change you want.
@@ -42,7 +42,7 @@ After that, use the sidebar to pull workflows or create a local workflow file, t
 ### Remote n8n environment
 
 ```bash
-n8nac env add Dev --base-url https://n8n.example.com --sync-folder workflows/dev
+n8nac env add Dev --base-url https://n8n.example.com --workflows-path workflows/dev
 n8nac env auth set Dev --api-key-stdin
 n8nac env use Dev
 n8nac update-ai
@@ -52,7 +52,7 @@ n8nac update-ai
 
 ```bash
 n8n-manager instance list
-n8nac env add Local --managed-instance <id> --sync-folder workflows/local
+n8nac env add Local --managed-instance <id> --workflows-path workflows/local
 n8nac env use Local
 n8nac update-ai
 ```
@@ -74,20 +74,14 @@ n8nac push workflows/dev/my-workflow.workflow.ts --verify
 
 Sync is explicit. The CLI and extension do not silently overwrite local or remote work.
 
-## Workspace Migration
-
-Existing repositories are not rewritten automatically on open.
-
-Inspect and apply required workspace migrations explicitly:
+## Check Readiness
 
 ```bash
-n8nac workspace migrate --json
-n8nac workspace migrate --write
-n8nac workspace migrate --json
 n8nac env status --json
+n8nac workspace status --json
 ```
 
-Run the JSON dry-run first and review the unified `operations` list. The `--write` form applies the migration atomically and creates a backup before updating `n8nac-config.json`.
+`env status --json` is the source of truth for the active environment, including the resolved `workflowsPath`.
 
 ## What Gets Created
 

@@ -5,9 +5,9 @@ import type { UpsertGlobalN8nInstanceInput } from '@n8n-as-code/n8n-manager-core
 import { ConfigService, resolveInstanceIdentifier } from 'n8nac';
 import { getWorkspaceRoot } from '../utils/state-detection.js';
 import type { N8nConfigurationController, N8nConfigurationSnapshot } from '../services/n8n-configuration-controller.js';
-import { YagrProviderService, normalizeYagrProviderId } from '../services/yagr-provider-service.js';
+import { AgentProviderService, normalizeAgentProviderId } from '../services/agent-provider-service.js';
 import { getConfigurationHtml } from './configuration-webview-html.js';
-import { runWorkspaceMigrationFromVscode } from '../services/workspace-migration-runner.js';
+import { ConfigurationInstanceEnrichmentCache } from './configuration-instance-enrichment.js';
 import { loadProjectsForConfigurationWebview } from './configuration-webview-projects.js';
 
 type ManagedSetupJob = {
@@ -27,6 +27,12 @@ type SetupInstanceRef = Awaited<ReturnType<ReturnType<typeof createN8nManagerFac
   warnings?: string[];
 };
 
+type NativeMcpConfigService = ConfigService & {
+  getNativeMcpToken(environmentNameOrId?: string): string | undefined;
+  saveNativeMcpToken(environmentNameOrId: string, token: string): void;
+  deleteNativeMcpToken(environmentNameOrId: string): void;
+};
+
 const WORKSPACE_ENVIRONMENT_MODEL_METADATA = { n8nacWorkspaceEnvironmentModel: 'v4' };
 
 function normalizeHost(host: string): string {
@@ -34,34 +40,32 @@ function normalizeHost(host: string): string {
   return trimmed.endsWith('/') ? trimmed.slice(0, -1) : trimmed;
 }
 
-function normalizeSyncRoot(syncRoot: string): string {
-  const trimmed = String(syncRoot || '').trim().replace(/\\/g, '/').replace(/\/+$/g, '');
-  return trimmed || 'workflows';
+function defaultNativeMcpEndpointFromHost(host: string | undefined): string {
+  const normalized = normalizeHost(host || '');
+  return normalized ? `${normalized}/mcp-server/http` : '';
 }
 
-async function clearLegacyWorkspaceSettings(): Promise<string[]> {
-  const config = vscode.workspace.getConfiguration('n8n');
-  const keys: Array<'host' | 'apiKey' | 'syncFolder' | 'projectId' | 'projectName'> = [
-    'host',
-    'apiKey',
-    'syncFolder',
-    'projectId',
-    'projectName',
-  ];
-  const cleared: string[] = [];
+function parseNativeMcpTimeoutMs(value: unknown): number | undefined {
+  const raw = String(value || '').trim();
+  if (!raw) return undefined;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) throw new Error('Native MCP timeout must be a positive integer.');
+  return parsed;
+}
 
-  for (const key of keys) {
-    const inspected = config.inspect<string>(key);
-    if (inspected?.workspaceValue !== undefined) {
-      await config.update(key, undefined, vscode.ConfigurationTarget.Workspace);
-      cleared.push(`n8n.${key}`);
-    }
-    if (inspected?.workspaceFolderValue !== undefined) {
-      await config.update(key, undefined, vscode.ConfigurationTarget.WorkspaceFolder);
-      cleared.push(`n8n.${key}`);
-    }
+async function parseMcpJsonResponse(response: Response): Promise<any> {
+  const body = await response.text();
+  const contentType = response.headers.get('content-type') || '';
+  if (contentType.includes('text/event-stream')) {
+    const dataLine = body.split(/\r?\n/).find((line) => line.startsWith('data:'));
+    if (!dataLine) return {};
+    return JSON.parse(dataLine.slice('data:'.length).trim());
   }
-  return [...new Set(cleared)];
+  return body ? JSON.parse(body) : {};
+}
+
+function normalizeWorkflowsPath(workflowsPath: string): string {
+  return String(workflowsPath || '').trim().replace(/\\/g, '/').replace(/\/+$/g, '');
 }
 
 function getNonce(): string {
@@ -105,12 +109,13 @@ export class ConfigurationWebview {
   private readonly _panel: vscode.WebviewPanel;
   private readonly _context: vscode.ExtensionContext;
   private readonly _configurationController: N8nConfigurationController;
-  private readonly _providerService: YagrProviderService;
+  private readonly _providerService: AgentProviderService;
   private readonly _disposables: vscode.Disposable[] = [];
   private _stateVersion = 0;
   private _initialTab: string | undefined;
   private readonly _managedSetupJobs = new Map<string, ManagedSetupJob>();
   private readonly _managedSetupJobCleanupTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly _instanceEnrichmentCache = new ConfigurationInstanceEnrichmentCache();
   private _queuedPinEnvironmentId: string | undefined;
   private _pinEnvironmentTask: Promise<void> | undefined;
 
@@ -123,7 +128,7 @@ export class ConfigurationWebview {
     this._panel = panel;
     this._context = context;
     this._configurationController = configurationController;
-    this._providerService = new YagrProviderService(context);
+    this._providerService = new AgentProviderService(context);
     this._initialTab = initialTab;
 
     this._panel.onDidDispose(() => {
@@ -138,7 +143,7 @@ export class ConfigurationWebview {
       ConfigurationWebview.currentPanel = undefined;
     });
 
-    this._panel.webview.options = { enableScripts: true };
+    this._panel.webview.options = this.getWebviewOptions();
     this._panel.webview.onDidReceiveMessage((message) => {
       void this.handleMessage(message);
     });
@@ -175,7 +180,7 @@ export class ConfigurationWebview {
       'n8nConfiguration',
       'n8n: Configure',
       column,
-      { enableScripts: true },
+      ConfigurationWebview.getWebviewOptions(context),
     );
 
     ConfigurationWebview.currentPanel = new ConfigurationWebview(panel, context, configurationController, initialTab);
@@ -194,14 +199,6 @@ export class ConfigurationWebview {
           await this._configurationController.refresh('webview-refresh', { force: true });
           return;
 
-        case 'migrateWorkspaceConfiguration':
-        case 'migrateLegacyWorkspaceConfig':
-        case 'migrateGlobalInstancesToEnvironments': {
-          if (!workspaceRoot) throw new Error('Open a workspace before running migration.');
-          await this.migrateWorkspaceConfiguration(workspaceRoot);
-          return;
-        }
-
         case 'loadProjects': {
           try {
             const result = await loadProjectsForConfigurationWebview(payload, {
@@ -217,6 +214,25 @@ export class ConfigurationWebview {
               requestKey: payload.requestKey,
               message: error?.message || 'Unable to load projects.',
             });
+          }
+          return;
+        }
+
+        case 'testNativeMcpConnection': {
+          const draftId = String(payload.draftId || 'new');
+          try {
+            if (!workspaceRoot) throw new Error('Open a workspace before testing native MCP assist.');
+            const configService = new ConfigService(workspaceRoot);
+            const endpoint = normalizeHost(String(payload.nativeMcpUrl || '')) || defaultNativeMcpEndpointFromHost(await this.resolveEnvironmentHostForNativeMcp(configService, globalFacade, payload));
+            if (!endpoint) throw new Error('Native MCP endpoint is required.');
+            const environmentId = String(payload.environmentId || '').trim();
+            const token = String(payload.nativeMcpToken || '').trim() || (environmentId ? (configService as NativeMcpConfigService).getNativeMcpToken(environmentId) : undefined);
+            if (!token) throw new Error('Native MCP token is required.');
+            const timeoutMs = parseNativeMcpTimeoutMs(payload.nativeMcpTimeoutMs) || 30_000;
+            const tools = await this.probeNativeMcpTools({ endpoint, token, timeoutMs });
+            this._panel.webview.postMessage({ type: 'nativeMcpTestResult', draftId, ok: true, message: `Connected. ${tools.length} native tool(s) discovered.` });
+          } catch (error: any) {
+            this._panel.webview.postMessage({ type: 'nativeMcpTestResult', draftId, ok: false, message: error?.message || 'Native MCP connection failed.' });
           }
           return;
         }
@@ -272,7 +288,6 @@ export class ConfigurationWebview {
           } else {
             configService.addInstanceTarget(input);
           }
-          await clearLegacyWorkspaceSettings();
           await this._configurationController.refresh('webview-save-instance-target', { force: true });
           this.notifySaved();
           return;
@@ -303,12 +318,14 @@ export class ConfigurationWebview {
           if (!workspaceRoot) throw new Error('Open a workspace before saving workspace environments.');
           const configService = new ConfigService(workspaceRoot);
           const environmentId = String(payload.environmentId || '').trim();
+          let existingEnvironment: ReturnType<ConfigService['getEnvironment']> | undefined;
           let environmentTargetId = String(payload.environmentTargetId || '').trim();
+          let existingEnvironmentTargetId = '';
           let currentEnvironmentTargetUrl = '';
           if (environmentId) {
-            const existingEnvironment = configService.getEnvironment(environmentId);
-            environmentTargetId = existingEnvironment.environmentTargetId;
-            const existingTarget = configService.getInstanceTarget(environmentTargetId);
+            existingEnvironment = configService.getEnvironment(environmentId);
+            existingEnvironmentTargetId = existingEnvironment.environmentTargetId;
+            const existingTarget = configService.getInstanceTarget(existingEnvironmentTargetId);
             if (existingTarget.kind === 'external-instance') {
               currentEnvironmentTargetUrl = normalizeHost(existingTarget.url);
             } else {
@@ -322,7 +339,11 @@ export class ConfigurationWebview {
           const name = String(payload.name || '').trim();
           const projectId = String(payload.projectId || '').trim();
           const projectName = String(payload.projectName || '').trim() || 'Personal';
-          if (environmentId && url && url !== currentEnvironmentTargetUrl) {
+          if (environmentId && !environmentTargetId && !instanceId && !url) {
+            environmentTargetId = existingEnvironmentTargetId;
+          }
+          const selectedExistingTargetChanged = Boolean(environmentId && environmentTargetId && environmentTargetId !== existingEnvironmentTargetId);
+          if (environmentId && !selectedExistingTargetChanged && url && url !== currentEnvironmentTargetUrl) {
             if (!apiKey) throw new Error('API key is required when replacing the environment URL.');
             environmentTargetId = this.ensureEmbeddedWorkspaceTarget(configService, {
               name: name || url,
@@ -333,8 +354,7 @@ export class ConfigurationWebview {
             const instance = (await globalFacade.listInstances()).find((item) => item.id === instanceId);
             if (!instance) throw new Error(`Unknown n8n instance preset: ${instanceId}`);
             if (instance.mode === 'managed-local-docker') {
-              const existingTarget = configService.listInstanceTargets().find((target) => target.kind === 'managed-instance' && target.managedInstanceId === instanceId);
-              environmentTargetId = existingTarget?.id || configService.addInstanceTarget({
+              environmentTargetId = configService.ensureManagedInstanceTarget({
                 name: instance.name || instanceId,
                 managedInstanceId: instanceId,
               }).id;
@@ -373,23 +393,37 @@ export class ConfigurationWebview {
           if (environmentTargetId && url && apiKey) {
             configService.saveWorkspaceTargetApiKey(environmentTargetId, apiKey);
           }
-          const syncFolder = normalizeSyncRoot(String(payload.syncFolder || '').trim());
+          const workflowsPath = normalizeWorkflowsPath(String(payload.workflowsPath || '').trim());
           const folderSync = typeof payload.folderSync === 'boolean' ? payload.folderSync : undefined;
+          const nativeMcpToken = String(payload.nativeMcpToken || '').trim();
+          const nativeMcp = this.buildNativeMcpEnvironmentConfig(payload, (existingEnvironment as any)?.nativeMcp, await this.resolveEnvironmentHostForNativeMcp(configService, globalFacade, {
+            ...payload,
+            environmentTargetId,
+            instanceId,
+            url,
+            fallbackUrl: currentEnvironmentTargetUrl,
+          }));
           const input = {
             name,
             environmentTarget: environmentTargetId,
             projectId,
             projectName,
-            syncFolder,
+            workflowsPath: workflowsPath || undefined,
             folderSync,
             customNodesPath: String(payload.customNodesPath || '').trim() || undefined,
             description: String(payload.description || '').trim() || undefined,
+            nativeMcp,
           };
           const savedEnvironment = environmentId
             ? configService.updateEnvironment(environmentId, input)
             : configService.addEnvironment(input);
-          await clearLegacyWorkspaceSettings();
-          this._panel.webview.postMessage({ type: 'environmentSaved', environment: savedEnvironment });
+          if (nativeMcpToken) {
+            (configService as NativeMcpConfigService).saveNativeMcpToken(savedEnvironment.id, nativeMcpToken);
+          } else if (nativeMcp && nativeMcp.enabled === false) {
+            (configService as NativeMcpConfigService).deleteNativeMcpToken(savedEnvironment.id);
+          }
+          const savedSnapshot = configService.getWorkspaceConfig().environments?.find((environment) => environment.id === savedEnvironment.id) || savedEnvironment;
+          this._panel.webview.postMessage({ type: 'environmentSaved', environment: savedSnapshot });
           this.notifySaved();
           void this._configurationController.refresh('webview-save-environment', { force: true }).catch(() => undefined);
           return;
@@ -458,6 +492,7 @@ export class ConfigurationWebview {
             if (action === 'stop') await globalFacade.stopInstance(instanceId);
             if (action === 'restart') await globalFacade.restartInstance(instanceId);
           });
+          this.invalidateInstanceEnrichment(instanceId);
           await this._configurationController.refresh(`webview-${action}-instance`, { force: true });
           this.notifySaved();
           return;
@@ -477,6 +512,7 @@ export class ConfigurationWebview {
             mode: 'reconcile',
             refreshPublicUrl: true,
           }));
+          this.invalidateInstanceEnrichment(instanceId);
           await this._configurationController.refresh('webview-refresh-public-url', { force: true });
           this.notifySaved();
           if (access.warnings.length) {
@@ -506,32 +542,6 @@ export class ConfigurationWebview {
           const url = String(payload.url || '').trim();
           if (!url) return;
           await vscode.env.openExternal(vscode.Uri.parse(url));
-          return;
-        }
-
-        case 'saveWorkspaceContext': {
-          if (!workspaceRoot) throw new Error('Open a workspace before saving workspace n8n settings.');
-          if (new ConfigService(workspaceRoot).getWorkspaceConfig().version === 4) {
-            throw new Error('This workspace uses environments. Pin or edit an environment instead of saving legacy workspace settings.');
-          }
-          const syncFolder = String(payload.syncFolder || '').trim();
-          await facade.writeWorkspaceOverrides({
-            version: 3,
-            activeInstanceId: String(payload.activeInstanceId || '').trim() || undefined,
-            syncFolder: syncFolder || undefined,
-            projectId: String(payload.projectId || '').trim() || undefined,
-            projectName: String(payload.projectName || '').trim() || undefined,
-            folderSync: Boolean(payload.folderSync),
-          }, workspaceRoot);
-          const clearedLegacySettings = await clearLegacyWorkspaceSettings();
-          await this._context.workspaceState.update('n8n.suppressSettingsChangedOnce', true);
-          await this._configurationController.refresh('webview-save-workspace-context', { force: true });
-          if (clearedLegacySettings.length > 0) {
-            void vscode.window.showInformationMessage(
-              `n8n-as-code moved legacy VS Code workspace settings (${clearedLegacySettings.join(', ')}) into n8n-manager plus n8nac-config.json workspace overrides.`,
-            );
-          }
-          this.notifySaved();
           return;
         }
 
@@ -568,7 +578,7 @@ export class ConfigurationWebview {
           return;
 
         case 'connectProvider': {
-          const provider = normalizeYagrProviderId(String(payload.provider || ''));
+          const provider = normalizeAgentProviderId(String(payload.provider || ''));
           if (!provider) throw new Error('Unsupported provider.');
           const configured = await this._providerService.setupProvider(provider);
           if (configured) {
@@ -581,7 +591,7 @@ export class ConfigurationWebview {
         }
 
         case 'disconnectProvider': {
-          const provider = normalizeYagrProviderId(String(payload.provider || ''));
+          const provider = normalizeAgentProviderId(String(payload.provider || ''));
           if (!provider) throw new Error('Unsupported provider.');
           await this._providerService.disconnectProvider(provider);
           await this.postInitialState();
@@ -638,27 +648,111 @@ export class ConfigurationWebview {
     }
   }
 
-  private async migrateWorkspaceConfiguration(workspaceRoot: string): Promise<void> {
-    const result = await runWorkspaceMigrationFromVscode(this._context, workspaceRoot);
-    if (result.outcome === 'not-needed') {
-      this.notifySaved();
-      await this._configurationController.refresh('webview-migration-not-needed', { force: true });
-      return;
-    }
+  private buildNativeMcpEnvironmentConfig(payload: Record<string, unknown>, existing: any, environmentHost: string) {
+    const enabled = Boolean(payload.nativeMcpEnabled);
+    const explicitUrl = normalizeHost(String(payload.nativeMcpUrl || ''));
+    const url = explicitUrl || (enabled ? defaultNativeMcpEndpointFromHost(environmentHost) : existing?.url);
+    const timeoutMs = parseNativeMcpTimeoutMs(payload.nativeMcpTimeoutMs) || existing?.timeoutMs;
+    const hasExisting = Boolean(existing);
+    const hasPayload = enabled || explicitUrl || String(payload.nativeMcpToken || '').trim() || hasExisting;
+    if (!hasPayload) return undefined;
+    return {
+      ...existing,
+      enabled,
+      mode: 'assist' as const,
+      url: url || undefined,
+      timeoutMs,
+      allowExecutionData: Boolean(payload.nativeMcpAllowExecutionData),
+      allowRemoteExposure: Boolean(payload.nativeMcpAllowRemote),
+      requireSyncBack: existing?.requireSyncBack ?? true,
+    };
+  }
 
-    if (result.outcome === 'cancelled') {
-      this._panel.webview.postMessage({ type: 'cancelled' });
-      return;
+  private async resolveEnvironmentHostForNativeMcp(
+    configService: ConfigService,
+    globalFacade: ReturnType<typeof createN8nManagerFacade>,
+    payload: Record<string, unknown>,
+  ): Promise<string> {
+    const url = normalizeHost(String(payload.url || ''));
+    if (url) return url;
+    const fallbackUrl = normalizeHost(String(payload.fallbackUrl || ''));
+    if (fallbackUrl) return fallbackUrl;
+    const environmentTargetId = String(payload.environmentTargetId || '').trim();
+    if (environmentTargetId) {
+      const target = configService.getInstanceTarget(environmentTargetId);
+      if (target.kind === 'external-instance') return normalizeHost(target.url);
+      const instances = await globalFacade.listInstances();
+      const instance = instances.find((item) => item.id === target.managedInstanceId);
+      return normalizeHost(instance?.tunnelPublicUrl || instance?.baseUrl || '');
     }
+    const instanceId = String(payload.instanceId || '').trim();
+    if (instanceId) {
+      const instances = await globalFacade.listInstances();
+      const instance = instances.find((item) => item.id === instanceId);
+      return normalizeHost(instance?.tunnelPublicUrl || instance?.baseUrl || '');
+    }
+    const environmentId = String(payload.environmentId || '').trim();
+    if (environmentId) {
+      return normalizeHost(configService.resolveEnvironment(environmentId).host);
+    }
+    return '';
+  }
 
-    const snapshot = await this._configurationController.refresh('webview-run-migration', { force: true });
-    await this.postInitialState(snapshot);
-    this._panel.webview.postMessage({
-      type: 'migrationCompleted',
-      backupPath: result.report.backupPath || '',
-      migratedCount: result.report.migratedEnvironmentIds?.length || 0,
-      deletedCount: result.report.deletedGlobalInstanceIds?.length || 0,
-    });
+  private async probeNativeMcpTools(input: { endpoint: string; token: string; timeoutMs: number }): Promise<string[]> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), input.timeoutMs);
+    const headers: Record<string, string> = {
+      accept: 'application/json, text/event-stream',
+      'content-type': 'application/json',
+      'mcp-protocol-version': '2025-06-18',
+      authorization: `Bearer ${input.token}`,
+    };
+    try {
+      const initializeResponse = await fetch(input.endpoint, {
+        method: 'POST',
+        headers,
+        signal: controller.signal,
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'initialize',
+          params: {
+            protocolVersion: '2025-06-18',
+            capabilities: {},
+            clientInfo: { name: 'n8n-as-code-vscode', version: '1.0.0' },
+          },
+        }),
+      });
+      if (!initializeResponse.ok) throw new Error(`Native MCP initialize failed with HTTP ${initializeResponse.status}.`);
+      const sessionId = initializeResponse.headers.get('mcp-session-id') || undefined;
+      const sessionHeaders = sessionId ? { ...headers, 'mcp-session-id': sessionId } : headers;
+      await parseMcpJsonResponse(initializeResponse);
+      await fetch(input.endpoint, {
+        method: 'POST',
+        headers: sessionHeaders,
+        signal: controller.signal,
+        body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} }),
+      });
+      const toolsResponse = await fetch(input.endpoint, {
+        method: 'POST',
+        headers: sessionHeaders,
+        signal: controller.signal,
+        body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }),
+      });
+      if (!toolsResponse.ok) throw new Error(`Native MCP tools/list failed with HTTP ${toolsResponse.status}.`);
+      const payload = await parseMcpJsonResponse(toolsResponse);
+      if (payload?.error?.message) throw new Error(String(payload.error.message));
+      const tools = Array.isArray(payload?.result?.tools) ? payload.result.tools : [];
+      if (sessionId) {
+        void fetch(input.endpoint, { method: 'DELETE', headers: sessionHeaders }).catch(() => undefined);
+      }
+      return tools.map((tool: any) => String(tool?.name || '')).filter(Boolean);
+    } catch (error: any) {
+      if (error?.name === 'AbortError') throw new Error('Native MCP connection timed out.');
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   private ensureEmbeddedWorkspaceTarget(configService: ConfigService, input: { name: string; url: string }): string {
@@ -875,51 +969,9 @@ export class ConfigurationWebview {
     const globalConfig = currentSnapshot.global;
     const workspaceOverrides = currentSnapshot.workspace;
     const effectiveContext = currentSnapshot.effective;
-    const instances = await Promise.all(globalConfig.instances.map(async (instance) => {
-      try {
-        const runtime = await instanceFacade.status({ instanceId: instance.id });
-        const access = await instanceFacade.resolveInstanceAccess({
-          instanceId: instance.id,
-          mode: 'observe',
-        });
-        const displayUrl = access.authUrl || access.publicN8nUrl || (access.publicUrlEnabled ? '' : access.apiBaseUrl || '');
-        return {
-          ...instance,
-          host: displayUrl,
-          displayUrl,
-          authBridgePublicUrl: access.authUrl,
-          verificationStatus: instance.verification?.status || 'unverified',
-          verificationLabel: instance.verification?.status === 'verified'
-            ? 'Verified'
-            : instance.verification?.status === 'failed'
-              ? 'Verification failed'
-              : 'Not verified yet',
-          runtimeStatus: runtime.status,
-          runtimeReady: 'ready' in runtime ? runtime.ready : runtime.status === 'ready',
-          ownerCredentialsAvailable: Boolean(runtime.instance?.ownerCredentialsAvailable),
-          runtimeBlockedCode: 'blocked' in runtime ? runtime.blocked?.code : undefined,
-          runtimeBlockedMessage: 'blocked' in runtime ? runtime.blocked?.message : undefined,
-          runtimeWarnings: access.warnings.length ? access.warnings : ('warnings' in runtime ? runtime.warnings : undefined),
-          tunnelRunning: access.tunnel?.running,
-          tunnelPublicUrl: access.publicN8nUrl || instance.tunnelPublicUrl,
-          access,
-        };
-      } catch (error: any) {
-        return {
-          ...instance,
-          host: instance.tunnelPublicUrl || instance.baseUrl || '',
-          verificationStatus: instance.verification?.status || 'unverified',
-          verificationLabel: instance.verification?.status === 'verified'
-            ? 'Verified'
-            : instance.verification?.status === 'failed'
-              ? 'Verification failed'
-              : 'Not verified yet',
-          runtimeStatus: 'unknown',
-          runtimeReady: false,
-          runtimeBlockedMessage: error?.message || 'Runtime status unavailable.',
-        };
-      }
-    }));
+    const instances = await Promise.all(globalConfig.instances.map((instance) => (
+      this._instanceEnrichmentCache.enrich(instance, instanceFacade)
+    )));
 
     this._panel.webview.postMessage({
       type: 'init',
@@ -930,14 +982,14 @@ export class ConfigurationWebview {
         instances,
       },
       workspace: workspaceOverrides,
-      migration: currentSnapshot.migration,
       effective: effectiveContext ? {
         activeInstanceId: effectiveContext.activeInstanceId,
         activeInstanceName: effectiveContext.activeInstanceName,
         host: effectiveContext.host,
         apiBaseUrl: effectiveContext.apiBaseUrl ?? effectiveContext.host,
         publicBaseUrl: effectiveContext.publicBaseUrl || '',
-        syncFolder: effectiveContext.syncFolder,
+        workflowsPath: (effectiveContext as any).workflowsPath || (effectiveContext as any).workflowDir || effectiveContext.syncFolder,
+        syncFolder: (effectiveContext as any).workflowsPath || (effectiveContext as any).workflowDir || effectiveContext.syncFolder,
         projectId: effectiveContext.projectId || '',
         projectName: effectiveContext.projectName || '',
         sources: effectiveContext.sources,
@@ -955,8 +1007,23 @@ export class ConfigurationWebview {
     }
   }
 
+  private invalidateInstanceEnrichment(instanceId: string): void {
+    this._instanceEnrichmentCache.invalidate(instanceId);
+  }
+
   private getHtmlForWebview(): string {
     const scriptUri = this._panel.webview.asWebviewUri(vscode.Uri.joinPath(this._context.extensionUri, 'out', 'settings-webview.js'));
     return getConfigurationHtml(getNonce(), scriptUri.toString());
+  }
+
+  private getWebviewOptions(): vscode.WebviewOptions {
+    return ConfigurationWebview.getWebviewOptions(this._context);
+  }
+
+  private static getWebviewOptions(context: vscode.ExtensionContext): vscode.WebviewOptions {
+    return {
+      enableScripts: true,
+      localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'out')],
+    };
   }
 }

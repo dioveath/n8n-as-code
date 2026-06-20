@@ -1,5 +1,167 @@
 # n8n-as-code
 
+## [2.36.0](https://github.com/EtienneLescot/n8n-as-code/compare/n8n-as-code@v2.34.0...n8n-as-code@v2.36.0) (2026-06-10)
+
+### Bug Fixes
+
+* **vscode:** optimize extension performance ([892c88d](https://github.com/EtienneLescot/n8n-as-code/commit/892c88d36043c4a83822592e33ed3592a0a3321d))
+
+## [2.34.0](https://github.com/EtienneLescot/n8n-as-code/compare/n8n-as-code@v2.32.0...n8n-as-code@v2.34.0) (2026-06-09)
+
+### Features
+
+* **vscode:** discover native MCP tools dynamically ([57c9c03](https://github.com/EtienneLescot/n8n-as-code/commit/57c9c03c43f8501ab2e0b1753d79db9f41e61a0d))
+* **mcp:** add native MCP client protocol versioning and integration tests ([299690f](https://github.com/EtienneLescot/n8n-as-code/commit/299690fa83c28c74482d9f445ec0aba7e9a76459))
+* **mcp:** scope native assist config to environments ([f51a532](https://github.com/EtienneLescot/n8n-as-code/commit/f51a5326dfc2d905292dc685cc32b13dd4aa64fd))
+
+### Bug Fixes
+
+* **vscode:** place final response after streamed operations ([3dc982b](https://github.com/EtienneLescot/n8n-as-code/commit/3dc982bd7226387899b9a7f598bc72e8621c19d0))
+* **vscode:** keep late tool events before final response ([143c005](https://github.com/EtienneLescot/n8n-as-code/commit/143c0059292c89ed204707dede3555a99d3f34c1))
+* **vscode:** strip null MCP args before calls ([ae336d5](https://github.com/EtienneLescot/n8n-as-code/commit/ae336d53a1ab829a9e5677685cc7129adf012545))
+* **vscode:** tolerate nullable MCP tool args ([2a9a57d](https://github.com/EtienneLescot/n8n-as-code/commit/2a9a57d46fe91814aea4841300c889a237dc1546))
+* **vscode:** surface deepagents aggregate errors ([333c7fc](https://github.com/EtienneLescot/n8n-as-code/commit/333c7fcaa54244e76804d5025413239173d86428))
+* **vscode:** normalize discovered MCP tool schemas ([48ef2d8](https://github.com/EtienneLescot/n8n-as-code/commit/48ef2d8e19f6229d3996b657466db7b0b5993e79))
+
+### Dependencies
+
+* The following workspace dependencies were updated
+    * @n8n-as-code/skills bumped from 2.2.6 to 2.3.0
+    * n8nac bumped from 2.3.6 to 2.4.0
+
+## [2.32.0](https://github.com/EtienneLescot/n8n-as-code/compare/n8n-as-code@v2.30.0...n8n-as-code@v2.32.0) (2026-06-05)
+
+### Bug Fixes
+
+* preserve explicit workspace context selection ([feefbe7](https://github.com/EtienneLescot/n8n-as-code/commit/feefbe7b132e811f9f1bd95dbcd0113142092fa1))
+* **vscode-extension:** return v4 unified config ([bf75dd0](https://github.com/EtienneLescot/n8n-as-code/commit/bf75dd0dc6f7f8f88e34cca1cad8fcec806c3a90))
+* address v4 workspace review feedback ([d111a7f](https://github.com/EtienneLescot/n8n-as-code/commit/d111a7fcc31cbdc2a3309cf4979395ee8f179880))
+* require v4 workspace environments ([6967d4d](https://github.com/EtienneLescot/n8n-as-code/commit/6967d4d0ecbaa4d18fe0077f42531b215f574d5e))
+
+### Dependencies
+
+* The following workspace dependencies were updated
+    * @n8n-as-code/skills bumped from 2.2.5 to 2.2.6
+    * n8nac bumped from 2.3.5 to 2.3.6
+
+## [2.30.0](https://github.com/EtienneLescot/n8n-as-code/compare/n8n-as-code@v2.28.0...n8n-as-code@v2.30.0) (2026-06-05)
+
+### Features
+
+* **vscode-extension:** implement robust external navigation bridge and workflow context ([a50051f](https://github.com/EtienneLescot/n8n-as-code/commit/a50051fa6f0db1d5112b56a82ca0ba13a72029ae))
+* **vscode-extension:** enhance popup bridge with synthetic window handles and form-test support ([4d1c4b4](https://github.com/EtienneLescot/n8n-as-code/commit/4d1c4b4977bde4f4a16d0123fccdb7d056a376c9))
+
+## [2.28.0](https://github.com/EtienneLescot/n8n-as-code/compare/n8n-as-code@v2.26.0...n8n-as-code@v2.28.0) (2026-06-04)
+
+### Bug Fixes
+
+* **vscode-extension:** stabilize workbench assistant completion ([b9903d3](https://github.com/EtienneLescot/n8n-as-code/commit/b9903d3d45c3d092e1f0c62b05f323f7b36fec97))
+
+## [2.26.0](https://github.com/EtienneLescot/n8n-as-code/compare/n8n-as-code@v2.24.0...n8n-as-code@v2.26.0) (2026-06-04)
+
+### Bug Fixes
+
+* **vscode-extension:** address workbench live test review ([c768593](https://github.com/EtienneLescot/n8n-as-code/commit/c768593d80cef6bbe2e1e53c64d766da0f833453))
+* **vscode-extension:** harden agent recovery and filesystem sandboxing ([faa0b95](https://github.com/EtienneLescot/n8n-as-code/commit/faa0b95f68b2e2729336a1e3bec67ccd333935e9))
+* **vscode-extension:** improve assistant phase recovery and codex stream handling ([83442ca](https://github.com/EtienneLescot/n8n-as-code/commit/83442caf53fbce9c40d5d369e776e8cc55e65fcb))
+
+### Dependencies
+
+* The following workspace dependencies were updated
+    * @n8n-as-code/skills bumped from 2.2.4 to 2.2.5
+    * n8nac bumped from 2.3.4 to 2.3.5
+
+## [2.24.0](https://github.com/EtienneLescot/n8n-as-code/compare/n8n-as-code@v2.22.0...n8n-as-code@v2.24.0) (2026-06-02)
+
+### Dependencies
+
+* The following workspace dependencies were updated
+    * @n8n-as-code/skills bumped from 2.2.3 to 2.2.4
+    * n8nac bumped from 2.3.3 to 2.3.4
+
+## [2.22.0](https://github.com/EtienneLescot/n8n-as-code/compare/n8n-as-code@v2.20.0...n8n-as-code@v2.22.0) (2026-05-29)
+
+### Dependencies
+
+* The following workspace dependencies were updated
+    * @n8n-as-code/skills bumped from 2.2.2 to 2.2.3
+    * n8nac bumped from 2.3.2 to 2.3.3
+
+## [2.20.0](https://github.com/EtienneLescot/n8n-as-code/compare/n8n-as-code@v2.18.0...n8n-as-code@v2.20.0) (2026-05-22)
+
+### Dependencies
+
+* The following workspace dependencies were updated
+    * @n8n-as-code/skills bumped from 2.2.1 to 2.2.2
+    * n8nac bumped from 2.3.1 to 2.3.2
+
+## [2.18.0](https://github.com/EtienneLescot/n8n-as-code/compare/n8n-as-code@v2.16.0...n8n-as-code@v2.18.0) (2026-05-22)
+
+### Features
+
+* **vscode-extension:** implement agent provider reasoning capabilities and managed settings ([93586ff](https://github.com/EtienneLescot/n8n-as-code/commit/93586ff5bc4e7f75b538eac0555bbff4a5078a9b))
+
+### Bug Fixes
+
+* **vscode-extension:** improve message content handling for strict provider adapters ([76ca1c4](https://github.com/EtienneLescot/n8n-as-code/commit/76ca1c430f5e8954de1ec800ea485b7821796ffb))
+
+## [2.16.0](https://github.com/EtienneLescot/n8n-as-code/compare/n8n-as-code@v2.14.0...n8n-as-code@v2.16.0) (2026-05-21)
+
+### Bug Fixes
+
+* **vscode-extension:** allow nested node_modules in runtime dependency copying ([37c16b3](https://github.com/EtienneLescot/n8n-as-code/commit/37c16b37288e7fd9a021809786908fab68f1e54c))
+
+## [2.14.0](https://github.com/EtienneLescot/n8n-as-code/compare/n8n-as-code@v2.12.0...n8n-as-code@v2.14.0) (2026-05-21)
+
+### Bug Fixes
+
+* **vscode:** require canonical agent skills for packaging ([6262bd0](https://github.com/EtienneLescot/n8n-as-code/commit/6262bd02d76423028a976259d8127f808a6ddbc6))
+* **vscode:** stop bundling generated skill json assets ([c785462](https://github.com/EtienneLescot/n8n-as-code/commit/c7854621a6a4aaeadd88420a4716e52fddb3563d))
+
+### Dependencies
+
+* The following workspace dependencies were updated
+    * @n8n-as-code/skills bumped from 2.2.0 to 2.2.1
+    * @n8n-as-code/telemetry bumped from 2.0.0 to 2.0.1
+    * n8nac bumped from 2.3.0 to 2.3.1
+
+## [2.10.0](https://github.com/EtienneLescot/n8n-as-code/compare/n8n-as-code@v2.8.0...n8n-as-code@v2.10.0) (2026-05-21)
+
+### Features
+
+* **worktree:** add delete confirmation and isolation warning banner ([81c95b7](https://github.com/EtienneLescot/n8n-as-code/commit/81c95b71cf242fec2dccbed9e98946bcaca4a20f))
+* **workbench:** add git worktree management to Agent Workbench ([af4c928](https://github.com/EtienneLescot/n8n-as-code/commit/af4c928b2fa40192b357b597803fb5d1a4f8dc82))
+* **vscode-extension:** improve workflow context management and asset resolution ([07a289f](https://github.com/EtienneLescot/n8n-as-code/commit/07a289f5cf2eb40e8e2192d3f21b436eff291e3d))
+* **ui:** enable parallel chat threads and session management ([a544c0c](https://github.com/EtienneLescot/n8n-as-code/commit/a544c0cacac36a3a848ae51e2cc1721652a20b55))
+* **agent-workbench:** implement parallel chat threads and visibility performance optimization ([0a98d85](https://github.com/EtienneLescot/n8n-as-code/commit/0a98d85fc268651b16eaccef5f6694ebe885d353))
+
+### Bug Fixes
+
+* **worktree:** force-remove worktree to handle agent-created files ([4498fc4](https://github.com/EtienneLescot/n8n-as-code/commit/4498fc42d8b2d05a5f7462077d2dcb0c17782330))
+* **worktree:** replace nested button with span to fix delete action ([1cb7ffe](https://github.com/EtienneLescot/n8n-as-code/commit/1cb7ffebcf563f41517823e5f97c253bcc4b2a6d))
+* **worktree:** move warning banner outside composer form ([f50bfa9](https://github.com/EtienneLescot/n8n-as-code/commit/f50bfa99a0e5e7f4f3cb920eeee57411d41a16b9))
+* **worktree:** move warning below input, simplify to orange text ([c2b18f9](https://github.com/EtienneLescot/n8n-as-code/commit/c2b18f97d5939f9300e49b13d9a8f0c1f7c9ed6f))
+* **worktree:** also filter main workspace from agent.worktree.list response ([a711f93](https://github.com/EtienneLescot/n8n-as-code/commit/a711f932c6d755b694055456707a4e0cab4479f2))
+* **worktree:** store worktrees under .n8nac/ and hide main workspace from list ([b575737](https://github.com/EtienneLescot/n8n-as-code/commit/b575737175cdd03c90116f2d6e4cbec1c182cee4))
+* **worktree:** let listWorktrees errors propagate in remove handler ([1c5d5a1](https://github.com/EtienneLescot/n8n-as-code/commit/1c5d5a1fbf08b7a83ac6ad73d3b591aa51698805))
+* **workbench:** address code review feedback ([cc1cf49](https://github.com/EtienneLescot/n8n-as-code/commit/cc1cf493c153a38b2e74494e8961cd5f5ab6d7c4))
+* **worktree:** swap worktree path before baseBranch in git args ([27a8ab8](https://github.com/EtienneLescot/n8n-as-code/commit/27a8ab8ec49f212540a7cc69481dab8b99ba0ad6))
+* **workbench:** clear stale active session ownership ([b99760b](https://github.com/EtienneLescot/n8n-as-code/commit/b99760b8ea9e20d71c6677c72f916ccd5d980e13))
+* **runtime:** replace custom zod-to-json-schema with langchain utility ([f0df91b](https://github.com/EtienneLescot/n8n-as-code/commit/f0df91baadaed45b2b27bd10470b82a86062f02a))
+* **ui:** rename yagr provider service to agent provider service ([d059c7a](https://github.com/EtienneLescot/n8n-as-code/commit/d059c7a6f8bcf64b8cc726d2385ecdba42d7782d))
+* **workbench:** rebuild parallel chat changes cleanly ([a03d3e1](https://github.com/EtienneLescot/n8n-as-code/commit/a03d3e1d0c38f0256416216defe4cc05b0d018ef))
+* **ui:** allow starting new sessions while agent is running ([1e0efb6](https://github.com/EtienneLescot/n8n-as-code/commit/1e0efb6dd51a46af05c79b2e5c46f4f17b5bdc75))
+* **agent-runtime:** address CodeRabbit feedback on prompt queue recursion and stop cleanup race ([929ef74](https://github.com/EtienneLescot/n8n-as-code/commit/929ef74d4838e89467c229332d0fe43d2d846675))
+* update core and credentials manager dependencies ([84cefbe](https://github.com/EtienneLescot/n8n-as-code/commit/84cefbe2561983b72f81ea7f395cbd4b00a7a5b8))
+* **config:** tolerate duplicate instance target names ([912adcc](https://github.com/EtienneLescot/n8n-as-code/commit/912adcc75d0368aa1f1c94251c606b4919c1bfba))
+
+### Dependencies
+
+* The following workspace dependencies were updated
+    * @n8n-as-code/manager-adapter bumped from 2.0.3 to 2.0.4
+    * @n8n-as-code/skills bumped from 2.1.3 to 2.2.0
+    * n8nac bumped from 2.2.1 to 2.3.0
+
 ## [2.8.0](https://github.com/EtienneLescot/n8n-as-code/compare/n8n-as-code@v2.6.0...n8n-as-code@v2.8.0) (2026-05-13)
 
 ### Features

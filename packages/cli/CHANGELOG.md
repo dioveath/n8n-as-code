@@ -1,5 +1,104 @@
 # @n8n-as-code/cli
 
+## [2.4.0](https://github.com/EtienneLescot/n8n-as-code/compare/n8nac@v2.3.6...n8nac@v2.4.0) (2026-06-09)
+
+### Features
+
+* **vscode:** discover native MCP tools dynamically ([57c9c03](https://github.com/EtienneLescot/n8n-as-code/commit/57c9c03c43f8501ab2e0b1753d79db9f41e61a0d))
+* **mcp:** scope native assist config to environments ([f51a532](https://github.com/EtienneLescot/n8n-as-code/commit/f51a5326dfc2d905292dc685cc32b13dd4aa64fd))
+* **mcp:** add optional native n8n MCP assist ([e1d32e4](https://github.com/EtienneLescot/n8n-as-code/commit/e1d32e451145b8d42c345fe03710c91c5e9eea41))
+
+### Bug Fixes
+
+* **mcp:** align cli dependency version ([4d041d1](https://github.com/EtienneLescot/n8n-as-code/commit/4d041d123e2c41d0c68d9ba937bbe13b0ea9a6d1))
+* **mcp:** address native assist review comments ([fbaa439](https://github.com/EtienneLescot/n8n-as-code/commit/fbaa439b004e1120b4eff599d3b8f8b3414e6804))
+
+### Dependencies
+
+* The following workspace dependencies were updated
+    * @n8n-as-code/mcp bumped from 2.0.15 to 2.1.0
+    * @n8n-as-code/skills bumped from 2.2.6 to 2.3.0
+
+## [2.3.6](https://github.com/EtienneLescot/n8n-as-code/compare/n8nac@v2.3.5...n8nac@v2.3.6) (2026-06-05)
+
+### Bug Fixes
+
+* preserve explicit workspace context selection ([feefbe7](https://github.com/EtienneLescot/n8n-as-code/commit/feefbe7b132e811f9f1bd95dbcd0113142092fa1))
+* address v4 workspace review feedback ([d111a7f](https://github.com/EtienneLescot/n8n-as-code/commit/d111a7fcc31cbdc2a3309cf4979395ee8f179880))
+* require v4 workspace environments ([6967d4d](https://github.com/EtienneLescot/n8n-as-code/commit/6967d4d0ecbaa4d18fe0077f42531b215f574d5e))
+
+### Dependencies
+
+* The following workspace dependencies were updated
+    * @n8n-as-code/skills bumped from 2.2.5 to 2.2.6
+
+## [2.3.5](https://github.com/EtienneLescot/n8n-as-code/compare/n8nac@v2.3.4...n8nac@v2.3.5) (2026-06-04)
+
+### Dependencies
+
+* The following workspace dependencies were updated
+    * @n8n-as-code/skills bumped from 2.2.4 to 2.2.5
+
+## [2.3.4](https://github.com/EtienneLescot/n8n-as-code/compare/n8nac@v2.3.3...n8nac@v2.3.4) (2026-06-02)
+
+### Dependencies
+
+* The following workspace dependencies were updated
+    * @n8n-as-code/skills bumped from 2.2.3 to 2.2.4
+
+## [2.3.3](https://github.com/EtienneLescot/n8n-as-code/compare/n8nac@v2.3.2...n8nac@v2.3.3) (2026-05-29)
+
+### Bug Fixes
+
+* **cli:** anchor workflow id decorator parsing ([3ffad0e](https://github.com/EtienneLescot/n8n-as-code/commit/3ffad0e9013562cfbf6a4268c85ee5727d174aad))
+* **cli:** improve credential mapping and workflow state tracking ([d2adac6](https://github.com/EtienneLescot/n8n-as-code/commit/d2adac69123ecdb119eef242f3d9edf336b30dd4))
+
+### Dependencies
+
+* The following workspace dependencies were updated
+    * @n8n-as-code/skills bumped from 2.2.2 to 2.2.3
+
+## [2.3.2](https://github.com/EtienneLescot/n8n-as-code/compare/n8nac@v2.3.1...n8nac@v2.3.2) (2026-05-22)
+
+### Dependencies
+
+* The following workspace dependencies were updated
+    * @n8n-as-code/skills bumped from 2.2.1 to 2.2.2
+
+## [2.3.1](https://github.com/EtienneLescot/n8n-as-code/compare/n8nac@v2.3.0...n8nac@v2.3.1) (2026-05-21)
+
+### Dependencies
+
+* The following workspace dependencies were updated
+    * @n8n-as-code/skills bumped from 2.2.0 to 2.2.1
+    * @n8n-as-code/telemetry bumped from 2.0.0 to 2.0.1
+
+## [2.3.0](https://github.com/EtienneLescot/n8n-as-code/compare/n8nac@v2.2.1...n8nac@v2.3.0) (2026-05-21)
+
+### Features
+
+* **vscode-extension:** improve workflow context management and asset resolution ([07a289f](https://github.com/EtienneLescot/n8n-as-code/commit/07a289f5cf2eb40e8e2192d3f21b436eff291e3d))
+* **cli:** add native environment promotion ([b5aaa3e](https://github.com/EtienneLescot/n8n-as-code/commit/b5aaa3ef1333fd8c42af1f119e01a9f153e4425c))
+
+### Bug Fixes
+
+* update core and credentials manager dependencies ([84cefbe](https://github.com/EtienneLescot/n8n-as-code/commit/84cefbe2561983b72f81ea7f395cbd4b00a7a5b8))
+* **cli:** refresh promotion discovery planning ([a2cf402](https://github.com/EtienneLescot/n8n-as-code/commit/a2cf402fef009962bfabd8ee63f028436da9bcfe))
+* **cli:** discover target ids for staged promotion ([2b909be](https://github.com/EtienneLescot/n8n-as-code/commit/2b909be4b01c1b2679af794c5714dd8255fa2212))
+* **config:** preserve legacy credential migration ([d07fd61](https://github.com/EtienneLescot/n8n-as-code/commit/d07fd615905cfc10ae7dc3e63566d5222d14945e))
+* **config:** ignore ambiguous target name credentials ([0872291](https://github.com/EtienneLescot/n8n-as-code/commit/087229135eb5645dbce471181221c6b1bdadcdbd))
+* **config:** tolerate duplicate instance target names ([912adcc](https://github.com/EtienneLescot/n8n-as-code/commit/912adcc75d0368aa1f1c94251c606b4919c1bfba))
+
+### Documentation
+
+* document promotion workflow ([c71ac78](https://github.com/EtienneLescot/n8n-as-code/commit/c71ac784f1d1f50de67506ce5597a6db6f83ded8))
+
+### Dependencies
+
+* The following workspace dependencies were updated
+    * @n8n-as-code/manager-adapter bumped from 2.0.3 to 2.0.4
+    * @n8n-as-code/skills bumped from 2.1.3 to 2.2.0
+
 ## [2.2.1](https://github.com/EtienneLescot/n8n-as-code/compare/n8nac@v2.2.0...n8nac@v2.2.1) (2026-05-13)
 
 ### Documentation

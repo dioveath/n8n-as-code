@@ -1,6 +1,5 @@
 import fs from 'fs';
 import path from 'path';
-import Conf from 'conf';
 import {
     N8nConfigurationService,
     N8nRuntimeOrchestrator,
@@ -10,7 +9,7 @@ import {
     type N8nInstanceVerificationStatus,
     type UpsertGlobalN8nInstanceInput,
 } from '@n8n-as-code/n8n-manager-core';
-import { N8nApiClient, createCanonicalInstanceIdentifier, createInstanceIdentifier, createInstanceUserIdentifier, createProjectSlug, createWorkflowDirNameV1, isCanonicalInstanceIdentifier, isCanonicalInstanceUserIdentifier, isCanonicalUserInstanceIdentifier, resolveInstanceIdentifier, resolveN8nIdentity as resolveN8nIdentityFromApi, type IResolvedN8nIdentity } from '../core/index.js';
+import { N8nApiClient, createCanonicalInstanceIdentifier, createInstanceIdentifier, createInstanceUserIdentifier, isCanonicalInstanceIdentifier, isCanonicalInstanceUserIdentifier, isCanonicalUserInstanceIdentifier, resolveInstanceIdentifier, resolveN8nIdentity as resolveN8nIdentityFromApi, type IResolvedN8nIdentity } from '../core/index.js';
 
 const DEFAULT_SYNC_FOLDER = 'workflows';
 
@@ -24,6 +23,7 @@ export interface ILocalConfig {
     projectName?: string;
     instanceIdentifier?: string;
     instanceUserIdentifier?: string;
+    workflowsPath?: string;
     workflowDir?: string;
     customNodesPath?: string;
     folderSync?: boolean;
@@ -70,13 +70,29 @@ export interface IExternalEnvironmentTarget {
 
 export type IEnvironmentTarget = IManagedEnvironmentTarget | IExternalEnvironmentTarget;
 
+export type IWorkspaceNativeMcpMode = 'assist' | 'direct';
+
+export interface IWorkspaceNativeMcpConfig {
+    enabled?: boolean;
+    url?: string;
+    mode?: IWorkspaceNativeMcpMode;
+    timeoutMs?: number;
+    allowRemoteExposure?: boolean;
+    allowExecutionData?: boolean;
+    requireSyncBack?: boolean;
+    tokenConfigured?: boolean;
+}
+
 export interface IWorkspaceEnvironment {
     id: string;
     name: string;
+    syncSlug?: string;
+    legacyWorkflowDir?: string;
     environmentTargetId: string;
     projectId?: string;
     projectName?: string;
-    syncFolder: string;
+    workflowsPath?: string;
+    syncFolder?: string;
     folderSync?: boolean;
     customNodesPath?: string;
     description?: string;
@@ -85,12 +101,14 @@ export interface IWorkspaceEnvironment {
     managedInstanceId?: string;
     instanceName?: string;
     url?: string;
+    workflowsPathResolved?: string;
     workflowDir?: string;
     instanceIdentifier?: string;
     instanceUserIdentifier?: string;
     apiKeyAvailable?: boolean;
     credentialSource?: 'env' | 'workspace-local' | 'global' | 'missing';
     accessStatus?: EnvironmentAccessStatus;
+    nativeMcp?: IWorkspaceNativeMcpConfig;
 }
 
 export type EnvironmentAccessStatus =
@@ -110,7 +128,7 @@ export interface IPersistedWorkspaceConfigV4 {
 }
 
 export interface IWorkspaceConfig extends ILocalConfig {
-    version: 3 | 4;
+    version: 4;
     activeInstanceId?: string;
     instances: IInstanceProfile[];
     activeEnvironmentId?: string;
@@ -141,7 +159,9 @@ export interface IResolvedWorkspaceEnvironment extends ILocalConfig {
     apiKeySource: 'env' | 'workspace-local' | 'global' | 'missing';
     apiKeyAvailable: boolean;
     accessStatus: EnvironmentAccessStatus;
-    syncFolder: string;
+    nativeMcp?: IWorkspaceNativeMcpConfig;
+    workflowsPath: string;
+    syncFolder?: string;
     instanceIdentifier?: string;
     instanceUserIdentifier?: string;
     workflowDir?: string;
@@ -151,109 +171,6 @@ export interface IResolvedWorkspaceEnvironment extends ILocalConfig {
         project: 'environment' | 'instance-default' | 'missing';
         syncFolder: 'environment';
     };
-}
-
-export interface ILegacyWorkspaceMigrationInstance extends Partial<ILocalConfig> {
-    id: string;
-    name: string;
-    hasApiKey: boolean;
-    verification?: IInstanceVerification;
-}
-
-export interface ILegacyWorkspaceMigrationPlan {
-    status: 'legacy-detected';
-    configPath: string;
-    version?: number;
-    activeInstanceId?: string;
-    instances: ILegacyWorkspaceMigrationInstance[];
-    workspace: Partial<ILocalConfig>;
-    warnings: string[];
-}
-
-export type ILegacyWorkspaceMigrationResult =
-    | { status: 'not-needed'; configPath: string }
-    | { status: 'dry-run'; plan: ILegacyWorkspaceMigrationPlan }
-    | { status: 'migrated'; plan: ILegacyWorkspaceMigrationPlan; backupPath: string; instances: IInstanceProfile[] };
-
-export interface IGlobalInstancesMigrationInstance {
-    id: string;
-    name: string;
-    mode: 'external-instance' | 'managed-instance';
-    url?: string;
-    projectId?: string;
-    projectName?: string;
-    apiKeyAvailable: boolean;
-}
-
-export interface IGlobalInstancesMigrationPlan {
-    status: 'global-instances-detected';
-    configPath: string;
-    activeInstanceId?: string;
-    instances: IGlobalInstancesMigrationInstance[];
-    warnings: string[];
-}
-
-export type IGlobalInstancesMigrationResult =
-    | { status: 'not-needed'; configPath: string }
-    | { status: 'dry-run'; plan: IGlobalInstancesMigrationPlan }
-    | { status: 'migrated'; plan: IGlobalInstancesMigrationPlan; migratedEnvironmentIds: string[]; deletedGlobalInstanceIds: string[] };
-
-export interface IWorkspaceMigrationPlan {
-    status: 'migration-required';
-    configPath: string;
-    legacyMigration?: ILegacyWorkspaceMigrationPlan;
-    globalInstancesMigration?: IGlobalInstancesMigrationPlan;
-    warnings: string[];
-}
-
-export type IWorkspaceMigrationResult =
-    | { status: 'not-needed'; configPath: string }
-    | { status: 'dry-run'; plan: IWorkspaceMigrationPlan }
-    | {
-        status: 'migrated';
-        plan: IWorkspaceMigrationPlan;
-        legacyMigration?: Extract<ILegacyWorkspaceMigrationResult, { status: 'migrated' }>;
-        globalInstancesMigration?: Extract<IGlobalInstancesMigrationResult, { status: 'migrated' }>;
-        backupPath?: string;
-        migratedEnvironmentIds: string[];
-        deletedGlobalInstanceIds: string[];
-    };
-
-export interface IWorkspaceMigrationOptions {
-    write?: boolean;
-    legacyApiKeyFallback?: { host?: string; apiKey?: string };
-}
-
-export interface IWorkspaceMigrationReportInstance {
-    id: string;
-    name: string;
-    kind: 'legacy-workspace-instance' | 'managed-instance' | 'external-instance';
-    url?: string;
-    projectId?: string;
-    projectName?: string;
-    apiKeyAvailable?: boolean;
-}
-
-export interface IWorkspaceMigrationReportOperation {
-    id: 'legacy-workspace-config' | 'global-instances';
-    label: string;
-    description: string;
-    instanceCount: number;
-    instances: IWorkspaceMigrationReportInstance[];
-    warnings: string[];
-}
-
-export interface IWorkspaceMigrationReport {
-    status: IWorkspaceMigrationResult['status'];
-    configPath: string;
-    required: boolean;
-    operations: IWorkspaceMigrationReportOperation[];
-    warnings: string[];
-    nextCommand?: string;
-    applyCommand?: string;
-    backupPath?: string;
-    migratedEnvironmentIds?: string[];
-    deletedGlobalInstanceIds?: string[];
 }
 
 export interface IPreviousWorkspaceUpgradePlan {
@@ -293,80 +210,42 @@ export class ConfigService {
     private readonly workspaceRoot: string;
 
     constructor(workspaceRoot?: string) {
-        this.workspaceRoot = workspaceRoot ? path.resolve(workspaceRoot) : this.findConfigRoot(process.cwd());
+        const testWorkspaceRoot = process.env.NODE_ENV === 'test'
+            ? process.env.N8NAC_TEST_WORKSPACE_ROOT?.trim()
+            : undefined;
+        this.workspaceRoot = workspaceRoot ? path.resolve(workspaceRoot) : testWorkspaceRoot ? path.resolve(testWorkspaceRoot) : this.findConfigRoot(process.cwd());
         this.manager = new N8nConfigurationService();
         this.runtime = new N8nRuntimeOrchestrator({ configuration: this.manager });
     }
 
     getLocalConfig(environmentNameOrId?: string): Partial<ILocalConfig> {
         try {
-            if (environmentNameOrId || this.isWorkspaceConfigV4()) {
-                return this.environmentToLocalConfig(this.resolveEnvironment(environmentNameOrId));
-            }
-            return this.contextToLocalConfig(this.resolveWorkspaceContext());
+            return this.environmentToLocalConfig(this.resolveEnvironment(environmentNameOrId));
         } catch {
-            try {
-                return this.contextToLocalConfig(this.resolveWorkspaceContext());
-            } catch {
-                return {};
-            }
+            return {};
         }
     }
 
     getWorkspaceConfig(): IWorkspaceConfig {
-        const legacyPlan = this.detectLegacyWorkspaceConfig();
-        if (legacyPlan) {
-            throw new Error(
-                `Unsupported legacy n8n workspace config at ${legacyPlan.configPath}. ` +
-                'Run `n8nac workspace migrate --json` to inspect it, then `n8nac workspace migrate --write` to migrate it after confirmation.'
-            );
-        }
         const persisted = this.readWorkspaceConfigFile();
-        if (persisted.version === 4) {
-            const instances = this.listInstances();
-            const effective = tryResolve(() => this.resolveEnvironment());
-            const environmentTargets = persisted.environmentTargets.map((target) => this.environmentTargetToSnapshot(target));
-            const environments = persisted.environments.map((environment) => this.environmentToSnapshot(environment));
-            return {
-                version: 4,
-                activeEnvironmentId: persisted.activeEnvironmentId,
-                activeInstanceId: effective?.activeInstanceId,
-                activeEnvironment: effective?.environment,
-                environmentTargets,
-                environments,
-                instances,
-                ...(effective ? this.environmentToLocalConfig(effective) : {}),
-                sourceKind: effective?.sourceKind,
-                environmentTargetId: effective?.environmentTargetId,
-                environmentTargetName: effective?.environmentTargetName,
-                apiKeyAvailable: effective?.apiKeyAvailable,
-                credentialSource: effective?.apiKeySource,
-            };
-        }
-
-        const overrides = this.manager.readWorkspaceOverrides(this.workspaceRoot);
         const instances = this.listInstances();
-        const effective = tryResolve(() => this.resolveWorkspaceContext());
-        const activeInstanceId = effective?.activeInstanceId || overrides.activeInstanceId || this.manager.getGlobalConfig().activeInstanceId;
-        const active = activeInstanceId ? instances.find((instance) => instance.id === activeInstanceId) : undefined;
-        const activeProfile = effective ? this.contextToInstanceProfile(effective) : active;
-
-        const resolvedSyncFolder = overrides.syncFolder || effective?.syncFolder;
-        const resolvedProjectName = overrides.projectName || activeProfile?.projectName;
-
+        const effective = tryResolve(() => this.resolveEnvironment());
+        const environmentTargets = persisted.environmentTargets.map((target) => this.environmentTargetToSnapshot(target));
+        const environments = persisted.environments.map((environment) => this.environmentToSnapshot(environment));
         return {
-            version: 3,
-            activeInstanceId,
+            version: 4,
+            activeEnvironmentId: persisted.activeEnvironmentId,
+            activeInstanceId: effective?.activeInstanceId,
+            activeEnvironment: effective?.environment,
+            environmentTargets,
+            environments,
             instances,
-            ...this.toLocalConfig({
-                ...activeProfile,
-                syncFolder: resolvedSyncFolder,
-                projectId: overrides.projectId || activeProfile?.projectId,
-                projectName: resolvedProjectName,
-                folderSync: overrides.folderSync ?? activeProfile?.folderSync,
-                customNodesPath: overrides.customNodesPath || activeProfile?.customNodesPath,
-                workflowDir: undefined,
-            }),
+            ...(effective ? this.environmentToLocalConfig(effective) : {}),
+            sourceKind: effective?.sourceKind,
+            environmentTargetId: effective?.environmentTargetId,
+            environmentTargetName: effective?.environmentTargetName,
+            apiKeyAvailable: effective?.apiKeyAvailable,
+            credentialSource: effective?.apiKeySource,
         };
     }
 
@@ -443,6 +322,31 @@ export class ConfigService {
         });
     }
 
+    ensureManagedInstanceTarget(input: { name: string; managedInstanceId: string; id?: string; description?: string }): IEnvironmentTarget {
+        const managedInstanceId = cleanRequired(input.managedInstanceId, 'Managed instance ID');
+        const config = this.ensureV4WorkspaceConfig();
+        const managedInstance = config.environmentTargets.find((target) => {
+            return target.kind === 'managed-instance' && target.managedInstanceId === managedInstanceId;
+        });
+        if (managedInstance) return managedInstance;
+
+        const existingNames = new Set(config.environmentTargets.map((target) => target.name.toLowerCase()));
+        const baseName = cleanRequired(input.name, 'Instance name');
+        let name = baseName;
+        let counter = 2;
+        while (existingNames.has(name.toLowerCase())) {
+            name = `${baseName} ${counter}`;
+            counter += 1;
+        }
+
+        return this.addInstanceTarget({
+            name,
+            id: input.id,
+            managedInstanceId,
+            description: input.description,
+        });
+    }
+
     updateInstanceTarget(nameOrId: string, patch: { name?: string; managedInstanceId?: string; url?: string; description?: string }): IEnvironmentTarget {
         const config = this.ensureV4WorkspaceConfig();
         const target = this.findInstanceTarget(config, nameOrId);
@@ -491,11 +395,14 @@ export class ConfigService {
         environmentTarget: string;
         projectId?: string;
         projectName?: string;
-        syncFolder: string;
+        workflowsPath?: string;
+        workflowDir?: string;
+        syncFolder?: string;
         id?: string;
         folderSync?: boolean;
         customNodesPath?: string;
         description?: string;
+        nativeMcp?: IWorkspaceNativeMcpConfig;
     }): IWorkspaceEnvironment {
         const config = this.ensureV4WorkspaceConfig();
         const name = cleanRequired(input.name, 'Environment name');
@@ -505,17 +412,26 @@ export class ConfigService {
             ...config.environments.map((item) => item.id),
         ]);
         this.assertUniqueName(name, config.environments, 'environment');
+        const syncSlug = this.uniqueEnvironmentSyncSlug(name, config.environments);
+        const workflowsPath = this.resolveInputWorkflowsPath({
+            workflowsPath: input.workflowsPath,
+            workflowDir: input.workflowDir,
+            syncFolder: input.syncFolder,
+            syncSlug,
+        }, config.environments, name);
 
         const environment: IWorkspaceEnvironment = {
             id,
             name,
+            syncSlug,
             environmentTargetId: target.id,
             projectId: cleanOptional(input.projectId),
             projectName: cleanOptional(input.projectName),
-            syncFolder: cleanRequired(input.syncFolder, 'Sync folder'),
+            workflowsPath,
             folderSync: input.folderSync,
             customNodesPath: input.customNodesPath,
             description: input.description,
+            nativeMcp: this.sanitizeNativeMcpConfig(input.nativeMcp),
         };
         const next = {
             ...config,
@@ -526,24 +442,36 @@ export class ConfigService {
         return environment;
     }
 
-    updateEnvironment(nameOrId: string, patch: Partial<Pick<IWorkspaceEnvironment, 'name' | 'projectId' | 'projectName' | 'syncFolder' | 'folderSync' | 'customNodesPath' | 'description'>> & { environmentTarget?: string }): IWorkspaceEnvironment {
+    updateEnvironment(nameOrId: string, patch: Partial<Pick<IWorkspaceEnvironment, 'name' | 'projectId' | 'projectName' | 'workflowsPath' | 'workflowDir' | 'syncFolder' | 'folderSync' | 'customNodesPath' | 'description'>> & { environmentTarget?: string; nativeMcp?: IWorkspaceNativeMcpConfig | null }): IWorkspaceEnvironment {
         const config = this.ensureV4WorkspaceConfig();
         const environment = this.findEnvironment(config, nameOrId);
+        const currentTarget = this.findInstanceTarget(config, environment.environmentTargetId);
         const target = patch.environmentTarget ? this.findInstanceTarget(config, patch.environmentTarget) : undefined;
         const nextName = cleanOptional(patch.name) || environment.name;
         if (nextName.toLowerCase() !== environment.name.toLowerCase()) {
             this.assertUniqueName(nextName, config.environments.filter((item) => item.id !== environment.id), 'environment');
         }
+        const currentWorkflowsPath = cleanRequired(environment.workflowsPath, 'Workflows path');
+        const workflowsPathPatch = this.patchWorkflowsPath(environment, patch);
+        const workflowsPathChanged = workflowsPathPatch !== undefined
+            && this.resolveWorkspacePath(workflowsPathPatch) !== this.resolveWorkspacePath(currentWorkflowsPath);
+        if (workflowsPathChanged) {
+            this.migrateWorkflowsPath(currentWorkflowsPath, workflowsPathPatch);
+        }
         const nextEnvironment: IWorkspaceEnvironment = stripUndefined({
             ...environment,
             name: nextName,
+            workflowsPath: workflowsPathPatch ?? environment.workflowsPath,
+            legacyWorkflowDir: undefined,
+            workflowDir: undefined,
+            syncFolder: undefined,
             environmentTargetId: target?.id || environment.environmentTargetId,
             projectId: patch.projectId !== undefined ? cleanOptional(patch.projectId) : environment.projectId,
             projectName: patch.projectName !== undefined ? cleanOptional(patch.projectName) : environment.projectName,
-            syncFolder: patch.syncFolder !== undefined ? cleanRequired(patch.syncFolder, 'Sync folder') : environment.syncFolder,
             folderSync: patch.folderSync ?? environment.folderSync,
             customNodesPath: patch.customNodesPath ?? environment.customNodesPath,
             description: patch.description ?? environment.description,
+            nativeMcp: patch.nativeMcp !== undefined ? this.sanitizeNativeMcpConfig(patch.nativeMcp) : environment.nativeMcp,
         });
         const next = {
             ...config,
@@ -569,6 +497,7 @@ export class ConfigService {
         if (config.activeEnvironmentId === environment.id && !options.force) {
             throw new Error(`Workspace environment "${environment.name}" is active. Pin another environment first, or re-run with --force to remove it and clear the active environment.`);
         }
+        this.deleteNativeMcpToken(environment.id);
         const nextEnvironments = config.environments.filter((item) => item.id !== environment.id);
         this.writeWorkspaceConfigV4({
             ...config,
@@ -587,8 +516,7 @@ export class ConfigService {
     }
 
     resolveEnvironment(environmentNameOrId?: string): IResolvedWorkspaceEnvironment {
-        const persisted = this.readWorkspaceConfigFile();
-        const config = persisted.version === 4 ? persisted : this.v3ToV4WorkspaceConfig();
+        const config = this.readWorkspaceConfigFile();
         if (config.environments.length === 0) {
             throw new Error('No workspace environment is configured. Run `n8nac env add` first.');
         }
@@ -598,7 +526,7 @@ export class ConfigService {
                 ? this.findEnvironment(config, config.activeEnvironmentId)
                 : config.environments[0];
         const target = this.findInstanceTarget(config, environment.environmentTargetId);
-        return this.resolveEnvironmentFromTarget(environment, target, environmentNameOrId ? 'explicit' : config.activeEnvironmentId ? 'workspace-default' : persisted.version === 4 ? 'workspace-default' : 'legacy');
+        return this.resolveEnvironmentFromTarget(environment, target, environmentNameOrId ? 'explicit' : 'workspace-default');
     }
 
     async prepareEnvironment(environmentNameOrId?: string): Promise<IResolvedWorkspaceEnvironment> {
@@ -608,17 +536,14 @@ export class ConfigService {
                 const identity = await this.resolveN8nIdentity(resolved.host, resolved.apiKey, undefined, resolved.instanceIdentifier || resolved.environmentTargetId).catch(() => undefined);
                 const instanceIdentifier = identity?.instanceIdentifier || resolved.instanceIdentifier;
                 const instanceUserIdentifier = identity?.instanceUserIdentifier || resolved.instanceUserIdentifier;
+                const workflowsPath = this.resolveEnvironmentWorkflowsPath(resolved.environment);
                 return {
                     ...resolved,
+                    workflowsPath,
+                    syncFolder: workflowsPath,
                     instanceIdentifier,
                     instanceUserIdentifier,
-                    workflowDir: this.buildEnvironmentWorkflowDir({
-                        syncFolder: resolved.syncFolder,
-                        environmentId: resolved.environmentId,
-                        instanceIdentifier,
-                        instanceUserIdentifier,
-                        projectId: resolved.projectId,
-                    }),
+                    workflowDir: workflowsPath,
                 };
             }
             return resolved;
@@ -636,7 +561,6 @@ export class ConfigService {
 
         const context = prepared.context;
         const apiKey = resolved.apiKey || context.apiKey;
-        const syncFolder = resolved.syncFolder;
         const projectId = resolved.projectId || context.projectId;
         const projectName = resolved.projectName || context.projectName;
         let instanceIdentifier = this.canonicalWorkflowInstanceIdentifier((context as any).n8nInstanceIdentifier)
@@ -650,6 +574,7 @@ export class ConfigService {
             instanceIdentifier = identity?.instanceIdentifier || instanceIdentifier;
             instanceUserIdentifier = identity?.instanceUserIdentifier || instanceUserIdentifier;
         }
+        const workflowsPath = this.resolveEnvironmentWorkflowsPath(resolved.environment);
         return {
             ...resolved,
             host: context.host,
@@ -663,14 +588,9 @@ export class ConfigService {
             instanceUserIdentifier,
             projectId,
             projectName,
-            syncFolder,
-            workflowDir: this.buildEnvironmentWorkflowDir({
-                syncFolder,
-                environmentId: resolved.environmentId,
-                instanceIdentifier,
-                instanceUserIdentifier,
-                projectId,
-            }),
+            workflowsPath,
+            syncFolder: workflowsPath,
+            workflowDir: workflowsPath,
         };
     }
 
@@ -679,8 +599,7 @@ export class ConfigService {
     }
 
     listInstances(): IInstanceProfile[] {
-        const overrides = this.isWorkspaceConfigV4() ? undefined : tryResolve(() => this.manager.readWorkspaceOverrides(this.workspaceRoot));
-        return this.manager.listInstances().map((instance) => this.toInstanceProfile(instance, overrides));
+        return this.manager.listInstances().map((instance) => this.toInstanceProfile(instance));
     }
 
     getInstanceConfig(instanceId: string): IInstanceProfile | undefined {
@@ -700,50 +619,34 @@ export class ConfigService {
         if (effective?.sourceKind === 'managed-instance' && effective.activeInstanceId) {
             return this.getInstanceConfig(effective.activeInstanceId);
         }
-        const legacy = tryResolve(() => this.resolveWorkspaceContext());
-        return legacy ? this.contextToInstanceProfile(legacy) : undefined;
+        return undefined;
     }
 
     getEffectiveInstanceConfig(instanceId?: string): IInstanceProfile | undefined {
         if (instanceId) {
-            const effective = tryResolve(() => this.resolveWorkspaceContext(instanceId));
-            return effective ? this.contextToInstanceProfile(effective) : undefined;
+            const instance = this.manager.getInstance(instanceId);
+            return instance ? this.toInstanceProfile(instance) : undefined;
         }
-        if (this.isWorkspaceConfigV4()) {
-            const environment = tryResolve(() => this.resolveEnvironment());
-            if (environment) return this.environmentToInstanceProfile(environment);
-        }
-        const effective = tryResolve(() => this.resolveWorkspaceContext());
-        return effective ? this.contextToInstanceProfile(effective) : undefined;
+        const environment = tryResolve(() => this.resolveEnvironment());
+        return environment ? this.environmentToInstanceProfile(environment) : undefined;
     }
 
     getEffectiveContext(instanceId?: string): EffectiveN8nContext | undefined {
-        if (!instanceId && this.isWorkspaceConfigV4()) {
-            return this.resolvedEnvironmentToEffectiveContext(tryResolve(() => this.resolveEnvironment()));
+        if (instanceId) {
+            throw new Error('Explicit instance context is not supported with V4 workspace environments. Resolve a workspace environment instead.');
         }
-        return tryResolve(() => this.resolveWorkspaceContext(instanceId));
+        return this.resolvedEnvironmentToEffectiveContext(tryResolve(() => this.resolveEnvironment()));
     }
 
     async prepareWorkspaceContext(input?: string | { instanceId?: string; environment?: string; consumer?: 'cli' | 'vscode' | string }): Promise<EffectiveN8nContext> {
-        const instanceId = typeof input === 'string' ? input : input?.instanceId;
-        const environment = typeof input === 'string' ? undefined : input?.environment;
-        const consumer = typeof input === 'string' ? 'cli' : input?.consumer === 'vscode' ? 'vscode' : 'cli';
-        if (environment || (!instanceId && this.isWorkspaceConfigV4())) {
-            return this.resolvedEnvironmentToEffectiveContext(await this.prepareEnvironment(environment))!;
+        const environment = typeof input === 'string' ? input : input?.environment;
+        if (typeof input === 'object' && input?.instanceId) {
+            throw new Error('Explicit instance context is not supported with V4 workspace environments. Resolve a workspace environment instead.');
         }
-        const prepared = await this.runtime.prepareEffectiveContext({
-            workspaceRoot: this.workspaceRoot,
-            instanceId,
-            syncFolderDefault: 'workspace',
-            consumer,
-            autoStart: true,
-        });
-        if (prepared.runtime.blocked) {
-            throw new Error(prepared.runtime.blocked.message);
+        if (typeof input === 'object' && input?.consumer && input.consumer !== 'cli') {
+            throw new Error(`Unsupported workspace context consumer: ${input.consumer}`);
         }
-        return {
-            ...prepared.context,
-        };
+        return this.resolvedEnvironmentToEffectiveContext(await this.prepareEnvironment(environment))!;
     }
 
     getCurrentInstanceConfigId(): string | undefined {
@@ -752,7 +655,7 @@ export class ConfigService {
 
     getActiveInstanceId(): string | undefined {
         const environment = tryResolve(() => this.resolveEnvironment());
-        return environment?.activeInstanceId || this.getActiveInstance()?.id || this.manager.getGlobalConfig().activeInstanceId;
+        return environment?.activeInstanceId;
     }
 
     getCurrentInstance(): IInstanceProfile | undefined {
@@ -925,10 +828,6 @@ export class ConfigService {
         config: Partial<ILocalConfig>,
         options: { instanceId?: string; instanceName?: string; setActive?: boolean; createNew?: boolean; apiKey?: string; verification?: IInstanceVerification } = {}
     ): IInstanceProfile {
-        const workspaceConfigIsV4 = this.isWorkspaceConfigV4();
-        if (workspaceConfigIsV4) {
-            this.assertNoLegacyWorkspaceFields(config);
-        }
         const current = (options.createNew ? undefined : (options.instanceId ? this.manager.getInstance(options.instanceId) : this.manager.getGlobalActiveInstance())) as GlobalN8nInstanceWithUserIdentifier | undefined;
         const host = this.resolveStoredBaseUrl(current, config.host);
         const input: UpsertGlobalN8nInstanceInputWithUserIdentifier = {
@@ -946,13 +845,11 @@ export class ConfigService {
         const saved = this.manager.upsertInstance(input, {
             setActive: options.setActive,
         });
-
-        if (workspaceConfigIsV4) {
-            return this.toInstanceProfile(saved);
+        if (options.apiKey) {
+            this.manager.saveApiKey(saved.id, options.apiKey);
         }
 
-        this.writeWorkspaceFields(saved.id, config, options.setActive !== false);
-        return this.toInstanceProfile(saved, this.manager.readWorkspaceOverrides(this.workspaceRoot));
+        return this.toInstanceProfile(saved);
     }
 
     saveInstanceProfile(profile: Partial<IInstanceProfile>, options: { setActive?: boolean; createNew?: boolean } = {}): IInstanceProfile {
@@ -1064,6 +961,27 @@ export class ConfigService {
         this.manager.saveApiKey(target.id, apiKey);
     }
 
+    getNativeMcpToken(environmentNameOrId?: string): string | undefined {
+        const environment = environmentNameOrId
+            ? this.findEnvironment(this.ensureV4WorkspaceConfig(), environmentNameOrId)
+            : this.resolveEnvironment().environment;
+        return this.manager.getApiKey(this.nativeMcpSecretKey(environment.id));
+    }
+
+    saveNativeMcpToken(environmentNameOrId: string, token: string): void {
+        const environment = this.findEnvironment(this.ensureV4WorkspaceConfig(), environmentNameOrId);
+        this.manager.saveApiKey(this.nativeMcpSecretKey(environment.id), cleanRequired(token, 'Native n8n MCP token'));
+    }
+
+    deleteNativeMcpToken(environmentNameOrId: string): void {
+        try {
+            const environment = this.findEnvironment(this.ensureV4WorkspaceConfig(), environmentNameOrId);
+            this.manager.deleteApiKey(this.nativeMcpSecretKey(environment.id));
+        } catch {
+            this.manager.deleteApiKey(this.nativeMcpSecretKey(environmentNameOrId));
+        }
+    }
+
     upsertRemoteInstancePreset(input: { host: string; apiKey?: string; name?: string }): IInstanceProfile {
         const host = cleanRequired(input.host, 'n8n URL');
         const normalized = this.normalizeHost(host);
@@ -1129,664 +1047,21 @@ export class ConfigService {
         return this.workspaceRoot;
     }
 
-    detectLegacyWorkspaceConfig(): ILegacyWorkspaceMigrationPlan | undefined {
-        const configPath = this.getInstanceConfigPath();
-        const raw = this.readRawWorkspaceConfig(configPath);
-        if (!raw || !this.isLegacyWorkspaceConfig(raw)) {
-            return undefined;
-        }
-
-        const instances = this.readLegacyInstances(raw);
-        const requestedActiveInstanceId = asString(raw.activeInstanceId);
-        const activeInstance = requestedActiveInstanceId
-            ? (instances.find((instance) => instance.id === requestedActiveInstanceId) || instances[0])
-            : instances[0];
-        const activeInstanceId = activeInstance?.id;
-        const workspace = stripUndefined({
-            syncFolder: asString(raw.syncFolder) || activeInstance?.syncFolder,
-            projectId: asString(raw.projectId) || activeInstance?.projectId,
-            projectName: asString(raw.projectName) || activeInstance?.projectName,
-            customNodesPath: asString(raw.customNodesPath) || activeInstance?.customNodesPath,
-            folderSync: asBoolean(raw.folderSync) ?? activeInstance?.folderSync,
-        });
-        const warnings = [
-            'Global n8n instances and API keys now live in n8n-manager, not in n8nac-config.json.',
-            'n8nac-config.json will keep workspace environments after migration.',
-            requestedActiveInstanceId && requestedActiveInstanceId !== activeInstanceId
-                ? `Legacy active instance "${requestedActiveInstanceId}" was not found; migration will use ${activeInstanceId ? `"${activeInstanceId}"` : 'no pinned instance'} instead.`
-                : undefined,
-            instances.some((instance) => instance.hasApiKey)
-                ? 'Embedded API keys found: --write will move them into the local n8n-manager secret store.'
-                : 'No externalInstance API keys found: you may need to run n8n-manager auth set after migration.',
-        ].filter(Boolean) as string[];
-
-        return {
-            status: 'legacy-detected',
-            configPath,
-            version: typeof raw.version === 'number' ? raw.version : undefined,
-            activeInstanceId,
-            instances,
-            workspace,
-            warnings,
-        };
-    }
-
-    migrateLegacyWorkspaceConfig(options: { write?: boolean } = {}): ILegacyWorkspaceMigrationResult {
-        const plan = this.detectLegacyWorkspaceConfig();
-        const configPath = this.getInstanceConfigPath();
-        if (!plan) {
-            return { status: 'not-needed', configPath };
-        }
-
-        if (!options.write) {
-            return { status: 'dry-run', plan };
-        }
-
-        const backupPath = this.createLegacyConfigBackup(configPath);
-        const rawLegacyConfig = this.readRawWorkspaceConfig(configPath) || {};
-        const migratedInstances: IInstanceProfile[] = [];
-        const migratedPairs: Array<{ legacy: ILegacyWorkspaceMigrationInstance; profile: IInstanceProfile }> = [];
-        for (const legacyInstance of plan.instances) {
-            const apiKey = this.readLegacyApiKey(legacyInstance.id, rawLegacyConfig)
-                || this.readLegacyStoredApiKey(legacyInstance.id, legacyInstance.host);
-            const saved = this.saveLocalConfig({
-                host: legacyInstance.host,
-                syncFolder: legacyInstance.syncFolder || plan.workspace.syncFolder,
-                projectId: legacyInstance.projectId || plan.workspace.projectId,
-                projectName: legacyInstance.projectName || plan.workspace.projectName,
-                instanceIdentifier: legacyInstance.instanceIdentifier,
-                customNodesPath: legacyInstance.customNodesPath || plan.workspace.customNodesPath,
-                folderSync: legacyInstance.folderSync ?? plan.workspace.folderSync,
-            }, {
-                instanceId: legacyInstance.id,
-                instanceName: legacyInstance.name,
-                setActive: legacyInstance.id === plan.activeInstanceId,
-                apiKey,
-            });
-            migratedInstances.push(saved);
-            migratedPairs.push({ legacy: legacyInstance, profile: saved });
-        }
-
-        if (migratedPairs.length > 0) {
-            const usedIds: string[] = [];
-            const targetNames = new Set<string>();
-            const environmentNames = new Set<string>();
-            const environmentTargets: IEnvironmentTarget[] = [];
-            const environments: IWorkspaceEnvironment[] = [];
-
-            for (const { legacy, profile } of migratedPairs) {
-                const baseName = profile.name || legacy.name || profile.host || legacy.id;
-                const singleInstanceMigration = migratedPairs.length === 1;
-                const targetName = this.uniqueDisplayName(baseName, targetNames);
-                const environmentName = this.uniqueDisplayName(singleInstanceMigration ? 'Default' : baseName, environmentNames);
-                const targetId = this.uniqueWorkspaceId(singleInstanceMigration ? 'default-instance' : `${profile.id || legacy.id || targetName}-instance`, usedIds);
-                usedIds.push(targetId);
-                const environmentId = this.uniqueWorkspaceId(singleInstanceMigration ? 'default' : profile.id || legacy.id || environmentName, usedIds);
-                usedIds.push(environmentId);
-                const syncFolder = legacy.syncFolder || plan.workspace.syncFolder || DEFAULT_SYNC_FOLDER;
-
-                environmentTargets.push({
-                    id: targetId,
-                    name: targetName,
-                    kind: 'external-instance',
-                    url: cleanRequired(profile.host || legacy.host, 'Legacy instance URL'),
-                    instanceIdentifier: profile.instanceIdentifier || legacy.instanceIdentifier,
-                    verification: legacy.verification,
-                });
-                environments.push(stripUndefined({
-                    id: environmentId,
-                    name: environmentName,
-                    environmentTargetId: targetId,
-                    projectId: legacy.projectId || plan.workspace.projectId,
-                    projectName: legacy.projectName || plan.workspace.projectName,
-                    syncFolder,
-                    customNodesPath: legacy.customNodesPath || plan.workspace.customNodesPath,
-                    folderSync: legacy.folderSync ?? plan.workspace.folderSync,
-                }));
-            }
-
-            const activePair = migratedPairs.find(({ legacy }) => legacy.id === plan.activeInstanceId) || migratedPairs[0];
-            const activeEnvironmentId = environments[migratedPairs.indexOf(activePair)]?.id || environments[0]?.id;
-            this.writeWorkspaceConfigV4({
-                version: 4,
-                activeEnvironmentId,
-                environmentTargets,
-                environments,
-            });
-        } else {
-            this.manager.writeWorkspaceOverrides(this.workspaceRoot, stripUndefined({
-                version: 3 as const,
-                syncFolder: plan.workspace.syncFolder,
-                projectId: plan.workspace.projectId,
-                projectName: plan.workspace.projectName,
-                customNodesPath: plan.workspace.customNodesPath,
-                folderSync: plan.workspace.folderSync,
-            }));
-        }
-
-        return { status: 'migrated', plan, backupPath, instances: migratedInstances };
-    }
-
-    detectWorkspaceMigration(): IWorkspaceMigrationPlan | undefined {
-        const configPath = this.getInstanceConfigPath();
-        const legacyMigration = this.detectLegacyWorkspaceConfig();
-        const globalInstancesMigration = this.detectGlobalInstancesMigration();
-        if (!legacyMigration && !globalInstancesMigration) return undefined;
-        return {
-            status: 'migration-required',
-            configPath,
-            legacyMigration,
-            globalInstancesMigration,
-            warnings: [
-                ...(legacyMigration?.warnings || []),
-                ...(globalInstancesMigration?.warnings || []),
-            ],
-        };
-    }
-
-    migrateWorkspaceConfiguration(options: IWorkspaceMigrationOptions = {}): IWorkspaceMigrationResult {
-        const initialPlan = this.detectWorkspaceMigration();
-        const configPath = this.getInstanceConfigPath();
-        if (!initialPlan) return { status: 'not-needed', configPath };
-        if (!options.write) return { status: 'dry-run', plan: initialPlan };
-
-        const snapshot = this.createWorkspaceMigrationSnapshot();
-        try {
-            let legacyMigration: Extract<ILegacyWorkspaceMigrationResult, { status: 'migrated' }> | undefined;
-            if (initialPlan.legacyMigration) {
-                const legacyResult = this.migrateLegacyWorkspaceConfig({ write: true });
-                if (legacyResult.status === 'migrated') {
-                    legacyMigration = legacyResult;
-                    this.preserveWorkspaceMigrationApiKeyFallback(options.legacyApiKeyFallback, legacyResult.instances);
-                }
-            }
-
-            const currentGlobalPlan = this.detectGlobalInstancesMigration();
-            let globalInstancesMigration: Extract<IGlobalInstancesMigrationResult, { status: 'migrated' }> | undefined;
-            if (currentGlobalPlan) {
-                const globalResult = this.migrateGlobalInstancesToEnvironments({ write: true });
-                if (globalResult.status === 'migrated') {
-                    globalInstancesMigration = globalResult;
-                }
-            }
-
-            const remainingPlan = this.detectWorkspaceMigration();
-            if (remainingPlan) {
-                throw new Error(this.formatIncompleteWorkspaceMigrationError(remainingPlan));
-            }
-
-            return {
-                status: 'migrated',
-                plan: initialPlan,
-                legacyMigration,
-                globalInstancesMigration,
-                backupPath: legacyMigration?.backupPath,
-                migratedEnvironmentIds: globalInstancesMigration?.migratedEnvironmentIds || [],
-                deletedGlobalInstanceIds: globalInstancesMigration?.deletedGlobalInstanceIds || [],
-            };
-        } catch (error) {
-            this.restoreWorkspaceMigrationSnapshot(snapshot);
-            throw error;
-        }
-    }
-
-    toWorkspaceMigrationReport(result: IWorkspaceMigrationResult): IWorkspaceMigrationReport {
-        if (result.status === 'not-needed') {
-            return {
-                status: result.status,
-                configPath: result.configPath,
-                required: false,
-                operations: [],
-                warnings: [],
-            };
-        }
-
-        return {
-            status: result.status,
-            configPath: result.plan.configPath,
-            required: result.status === 'dry-run',
-            operations: this.workspaceMigrationPlanToOperations(result.plan),
-            warnings: result.plan.warnings,
-            nextCommand: result.status === 'dry-run' ? 'n8nac workspace migrate --json' : undefined,
-            applyCommand: result.status === 'dry-run' ? 'n8nac workspace migrate --write' : undefined,
-            backupPath: result.status === 'migrated' ? result.backupPath : undefined,
-            migratedEnvironmentIds: result.status === 'migrated' ? result.migratedEnvironmentIds : undefined,
-            deletedGlobalInstanceIds: result.status === 'migrated' ? result.deletedGlobalInstanceIds : undefined,
-        };
-    }
-
-    workspaceMigrationPlanToReport(plan: IWorkspaceMigrationPlan): IWorkspaceMigrationReport {
-        return {
-            status: 'dry-run',
-            configPath: plan.configPath,
-            required: true,
-            operations: this.workspaceMigrationPlanToOperations(plan),
-            warnings: plan.warnings,
-            nextCommand: 'n8nac workspace migrate --json',
-            applyCommand: 'n8nac workspace migrate --write',
-        };
-    }
-
-    private workspaceMigrationPlanToOperations(plan: IWorkspaceMigrationPlan): IWorkspaceMigrationReportOperation[] {
-        const operations: IWorkspaceMigrationReportOperation[] = [];
-        if (plan.legacyMigration) {
-            operations.push({
-                id: 'legacy-workspace-config',
-                label: 'Legacy workspace config',
-                description: 'Convert legacy n8nac workspace config into workspace environments and local n8n-manager secrets.',
-                instanceCount: plan.legacyMigration.instances.length,
-                instances: plan.legacyMigration.instances.map((instance) => stripUndefined({
-                    id: instance.id,
-                    name: instance.name,
-                    kind: 'legacy-workspace-instance' as const,
-                    url: instance.host,
-                    projectId: instance.projectId,
-                    projectName: instance.projectName,
-                    apiKeyAvailable: instance.hasApiKey,
-                })),
-                warnings: plan.legacyMigration.warnings,
-            });
-        }
-        if (plan.globalInstancesMigration) {
-            operations.push({
-                id: 'global-instances',
-                label: 'Global/v2 instances',
-                description: 'Attach managed instances to this workspace and copy external global instances into workspace environments.',
-                instanceCount: plan.globalInstancesMigration.instances.length,
-                instances: plan.globalInstancesMigration.instances.map((instance) => stripUndefined({
-                    id: instance.id,
-                    name: instance.name,
-                    kind: instance.mode,
-                    url: instance.url,
-                    projectId: instance.projectId,
-                    projectName: instance.projectName,
-                    apiKeyAvailable: instance.apiKeyAvailable,
-                })),
-                warnings: plan.globalInstancesMigration.warnings,
-            });
-        }
-        return operations;
-    }
-
-    detectGlobalInstancesMigration(): IGlobalInstancesMigrationPlan | undefined {
-        const configPath = this.getInstanceConfigPath();
-        const global = this.manager.getGlobalConfig();
-        const workspace = this.readWorkspaceConfigFileSafe();
-        const environmentTargetIds = new Set(workspace.environments.map((environment) => environment.environmentTargetId));
-        const instances = global.instances
-            .filter((instance) => {
-                if (this.getGlobalExternalInstanceUrl(instance)) return true;
-                if (instance.mode !== 'managed-local-docker') return false;
-                const migratedTarget = workspace.environmentTargets.find((target) => {
-                    return target.kind === 'managed-instance'
-                        && target.managedInstanceId === instance.id
-                        && environmentTargetIds.has(target.id);
-                });
-                return !migratedTarget
-                    && instance.metadata?.n8nacWorkspaceEnvironmentModel !== 'v4';
-            })
-            .map((instance) => stripUndefined({
-                id: instance.id,
-                name: instance.name || this.getGlobalExternalInstanceUrl(instance) || instance.id,
-                mode: instance.mode === 'managed-local-docker' ? 'managed-instance' as const : 'external-instance' as const,
-                url: this.getGlobalExternalInstanceUrl(instance) || '',
-                projectId: instance.defaultProject?.id,
-                projectName: instance.defaultProject?.name,
-                apiKeyAvailable: Boolean(this.manager.getApiKey(instance.id)),
-            }));
-
-        if (!instances.length) return undefined;
-        return {
-            status: 'global-instances-detected',
-            configPath,
-            activeInstanceId: global.activeInstanceId,
-            instances,
-            warnings: [
-                'Global n8n instances belong to the previous v2 workspace model.',
-                'Migration will copy external instances into this workspace as environments, move API keys to workspace target secrets, then remove the old external global instance entries.',
-                'Managed instances will be added to this workspace as environments and will stay global.',
-            ],
-        };
-    }
-
-    migrateGlobalInstancesToEnvironments(options: { write?: boolean } = {}): IGlobalInstancesMigrationResult {
-        const plan = this.detectGlobalInstancesMigration();
-        const configPath = this.getInstanceConfigPath();
-        if (!plan) return { status: 'not-needed', configPath };
-        if (!options.write) return { status: 'dry-run', plan };
-
-        const current = this.readWorkspaceConfigFileSafe();
-        const usedIds = [
-            ...current.environmentTargets.map((item) => item.id),
-            ...current.environments.map((item) => item.id),
-        ];
-        const targetNames = new Set(current.environmentTargets.map((item) => item.name));
-        const environmentNames = new Set(current.environments.map((item) => item.name));
-        const environmentTargets = [...current.environmentTargets];
-        const environments = [...current.environments];
-        const migratedEnvironmentIds: string[] = [];
-        const deletedGlobalInstanceIds: string[] = [];
-        let activeMigratedEnvironmentId: string | undefined;
-
-        for (const item of plan.instances) {
-            const instance = this.manager.getInstance(item.id);
-            if (!instance) continue;
-            if (instance.mode === 'managed-local-docker') {
-                const existingTarget = environmentTargets.find((target) => target.kind === 'managed-instance' && target.managedInstanceId === instance.id);
-                let targetId = existingTarget?.id;
-                if (!targetId) {
-                    const targetName = this.uniqueDisplayName(instance.name || instance.id, targetNames);
-                    targetId = this.uniqueWorkspaceId(instance.id, usedIds);
-                    usedIds.push(targetId);
-                    environmentTargets.push({
-                        id: targetId,
-                        name: targetName,
-                        kind: 'managed-instance',
-                        managedInstanceId: instance.id,
-                    });
-                }
-
-                let existingEnvironment = environments.find((environment) => environment.environmentTargetId === targetId);
-                if (!existingEnvironment) {
-                    const environmentName = this.uniqueDisplayName(instance.name || instance.id, environmentNames);
-                    const environmentId = this.uniqueWorkspaceId(instance.id || environmentName, usedIds);
-                    usedIds.push(environmentId);
-                    const syncFolder = DEFAULT_SYNC_FOLDER;
-                    existingEnvironment = stripUndefined({
-                        id: environmentId,
-                        name: environmentName,
-                        environmentTargetId: targetId,
-                        projectId: instance.defaultProject?.id || 'personal',
-                        projectName: instance.defaultProject?.name || 'Personal',
-                        syncFolder,
-                    });
-                    environments.push(existingEnvironment);
-                    migratedEnvironmentIds.push(environmentId);
-                }
-                if (instance.id === plan.activeInstanceId) activeMigratedEnvironmentId = existingEnvironment.id;
-                this.manager.upsertInstance({
-                    id: instance.id,
-                    metadata: {
-                        ...(instance.metadata ?? {}),
-                        n8nacWorkspaceEnvironmentModel: 'v4',
-                    },
-                }, { setActive: false });
-                continue;
-            }
-
-            const externalUrl = this.getGlobalExternalInstanceUrl(instance);
-            if (!externalUrl) continue;
-            const apiKey = this.manager.getApiKey(instance.id);
-            const normalizedBaseUrl = this.normalizeHost(externalUrl);
-            const existingTargetIndex = environmentTargets.findIndex((target) => {
-                if (target.kind === 'managed-instance') return target.managedInstanceId === instance.id;
-                return this.normalizeHost(target.url) === normalizedBaseUrl;
-            });
-            if (existingTargetIndex >= 0) {
-                const existingTarget = environmentTargets[existingTargetIndex];
-                if (existingTarget.kind === 'managed-instance') {
-                    environmentTargets[existingTargetIndex] = {
-                        id: existingTarget.id,
-                        name: existingTarget.name,
-                        kind: 'external-instance',
-                        url: externalUrl,
-                        instanceIdentifier: instance.instanceIdentifier,
-                        verification: instance.verification,
-                        description: existingTarget.description,
-                    };
-                }
-                if (apiKey) this.manager.saveApiKey(existingTarget.id, apiKey);
-                let existingEnvironment = environments.find((environment) => environment.environmentTargetId === existingTarget.id);
-                if (!existingEnvironment) {
-                    const environmentName = this.uniqueDisplayName(instance.name || externalUrl || instance.id, environmentNames);
-                    const environmentId = this.uniqueWorkspaceId(instance.id || environmentName, usedIds);
-                    usedIds.push(environmentId);
-                    const syncFolder = DEFAULT_SYNC_FOLDER;
-                    existingEnvironment = stripUndefined({
-                        id: environmentId,
-                        name: environmentName,
-                        environmentTargetId: existingTarget.id,
-                        projectId: instance.defaultProject?.id || 'personal',
-                        projectName: instance.defaultProject?.name || 'Personal',
-                        syncFolder,
-                    });
-                    environments.push(existingEnvironment);
-                    migratedEnvironmentIds.push(environmentId);
-                }
-                if (instance.id === plan.activeInstanceId) activeMigratedEnvironmentId = existingEnvironment.id;
-                continue;
-            }
-            const targetName = this.uniqueDisplayName(instance.name || externalUrl || instance.id, targetNames);
-            const environmentName = this.uniqueDisplayName(instance.name || externalUrl || instance.id, environmentNames);
-            const targetId = this.uniqueWorkspaceId(`${instance.id}-instance`, usedIds);
-            usedIds.push(targetId);
-            const environmentId = this.uniqueWorkspaceId(instance.id || environmentName, usedIds);
-            usedIds.push(environmentId);
-            const projectId = instance.defaultProject?.id || 'personal';
-            const projectName = instance.defaultProject?.name || 'Personal';
-            const syncFolder = DEFAULT_SYNC_FOLDER;
-
-            environmentTargets.push({
-                id: targetId,
-                name: targetName,
-                kind: 'external-instance',
-                url: externalUrl,
-                instanceIdentifier: instance.instanceIdentifier,
-                verification: instance.verification,
-            });
-            environments.push(stripUndefined({
-                id: environmentId,
-                name: environmentName,
-                environmentTargetId: targetId,
-                projectId,
-                projectName,
-                syncFolder,
-            }));
-
-            if (apiKey) this.manager.saveApiKey(targetId, apiKey);
-            migratedEnvironmentIds.push(environmentId);
-            if (instance.id === plan.activeInstanceId) activeMigratedEnvironmentId = environmentId;
-        }
-
-        const activeEnvironmentId = current.activeEnvironmentId
-            || activeMigratedEnvironmentId
-            || migratedEnvironmentIds[0]
-            || environments[0]?.id;
-
-        this.writeWorkspaceConfigV4(stripUndefined({
-            version: 4 as const,
-            activeEnvironmentId,
-            environmentTargets,
-            environments,
-        }));
-
-        for (const item of plan.instances) {
-            const instance = this.manager.getInstance(item.id);
-            if (instance && this.getGlobalExternalInstanceUrl(instance)) {
-                this.manager.deleteInstance(item.id);
-                deletedGlobalInstanceIds.push(item.id);
-            }
-        }
-
-        return { status: 'migrated', plan, migratedEnvironmentIds, deletedGlobalInstanceIds };
-    }
-
     resolveWorkspacePath(targetPath: string): string {
         return path.isAbsolute(targetPath)
             ? targetPath
             : path.resolve(this.workspaceRoot, targetPath);
     }
 
-    private readRawWorkspaceConfig(configPath: string): Record<string, unknown> | undefined {
-        if (!fs.existsSync(configPath)) {
-            return undefined;
-        }
-        try {
-            const value = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-            return value && typeof value === 'object' && !Array.isArray(value)
-                ? value as Record<string, unknown>
-                : undefined;
-        } catch {
-            return undefined;
-        }
-    }
-
-    private isLegacyWorkspaceConfig(raw: Record<string, unknown>): boolean {
-        if (raw.version === 1 || raw.version === 2) return true;
-        if (Array.isArray(raw.instances)) return true;
-        if (typeof raw.apiKey === 'string') return true;
-        return false;
-    }
-
-    private readLegacyInstances(raw: Record<string, unknown>): ILegacyWorkspaceMigrationInstance[] {
-        const rawInstances = Array.isArray(raw.instances) ? raw.instances : [];
-        if (rawInstances.length > 0) {
-            return rawInstances
-                .map((candidate, index) => this.toLegacyInstance(candidate, raw, index, false))
-                .filter((instance): instance is ILegacyWorkspaceMigrationInstance => Boolean(instance));
-        }
-        const candidates = this.hasRootLegacyInstance(raw) ? [raw] : [];
-        return candidates
-            .map((candidate, index) => this.toLegacyInstance(candidate, raw, index, true))
-            .filter((instance): instance is ILegacyWorkspaceMigrationInstance => Boolean(instance));
-    }
-
-    private hasRootLegacyInstance(raw: Record<string, unknown>): boolean {
-        return Boolean(asString(raw.host) || asString(raw.url) || asString(raw.baseUrl));
-    }
-
-    private toLegacyInstance(candidate: unknown, root: Record<string, unknown>, index: number, useRootActiveInstanceId: boolean): ILegacyWorkspaceMigrationInstance | undefined {
-        if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
-            return undefined;
-        }
-        const value = candidate as Record<string, unknown>;
-        const id = asString(value.id) || (useRootActiveInstanceId ? asString(root.activeInstanceId) : undefined) || `legacy-${index + 1}`;
-        const host = asString(value.host) || asString(value.url) || asString(value.baseUrl) || asString(root.host) || asString(root.url) || asString(root.baseUrl);
-        const name = asString(value.name) || host || id;
-        return stripUndefined({
-            id,
-            name,
-            host,
-            syncFolder: asString(value.syncFolder) || asString(root.syncFolder),
-            projectId: asString(value.projectId) || asString(root.projectId),
-            projectName: asString(value.projectName) || asString(root.projectName),
-            instanceIdentifier: asString(value.instanceIdentifier) || asString(root.instanceIdentifier),
-            workflowDir: asString(value.workflowDir) || asString(root.workflowDir),
-            verification: value.verification && typeof value.verification === 'object' && !Array.isArray(value.verification)
-                ? value.verification as IInstanceVerification
-                : undefined,
-            customNodesPath: asString(value.customNodesPath) || asString(root.customNodesPath),
-            folderSync: asBoolean(value.folderSync) ?? asBoolean(root.folderSync),
-            hasApiKey: Boolean(asString(value.apiKey) || asString(root.apiKey)),
-        });
-    }
-
-    private readLegacyApiKey(instanceId: string, root: Record<string, unknown>): string | undefined {
-        const instances = Array.isArray(root.instances) ? root.instances : [];
-        const match = instances.find((candidate) => {
-            return candidate && typeof candidate === 'object' && !Array.isArray(candidate)
-                && asString((candidate as Record<string, unknown>).id) === instanceId;
-        }) as Record<string, unknown> | undefined;
-        if (match) {
-            return asString(match.apiKey) || asString(root.apiKey);
-        }
-
-        const syntheticIndex = this.syntheticLegacyIndex(instanceId);
-        const syntheticMatch = syntheticIndex !== undefined ? instances[syntheticIndex] : undefined;
-        if (syntheticMatch && typeof syntheticMatch === 'object' && !Array.isArray(syntheticMatch)) {
-            return asString((syntheticMatch as Record<string, unknown>).apiKey) || asString(root.apiKey);
-        }
-
-        return asString(root.apiKey);
-    }
-
-    private readLegacyStoredApiKey(instanceId: string, host?: string): string | undefined {
-        try {
-            const store = new Conf<Record<string, unknown>>({
-                projectName: 'n8nac',
-                configName: 'credentials',
-                configFileMode: 0o600,
-            });
-            const instanceProfiles = store.get('instanceProfiles') as Record<string, unknown> | undefined;
-            const instanceApiKey = asString(instanceProfiles?.[instanceId]);
-            if (instanceApiKey) return instanceApiKey;
-
-            if (!host) return undefined;
-            const hosts = store.get('hosts') as Record<string, unknown> | undefined;
-            return asString(hosts?.[this.normalizeHost(host)]);
-        } catch {
-            return undefined;
-        }
-    }
-
-    private syntheticLegacyIndex(instanceId: string): number | undefined {
-        const match = instanceId.match(/^legacy-(\d+)$/);
-        if (!match) return undefined;
-        const index = Number.parseInt(match[1], 10) - 1;
-        return Number.isSafeInteger(index) && index >= 0 ? index : undefined;
-    }
-
-    private createLegacyConfigBackup(configPath: string): string {
-        const timestamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\..*$/, '').replace('T', '-');
-        const backupPath = path.join(path.dirname(configPath), `n8nac-config.v1-backup-${timestamp}.json`);
-        fs.copyFileSync(configPath, backupPath);
-        return backupPath;
-    }
-
-    private createWorkspaceMigrationSnapshot(): Array<{ path: string; content?: Buffer }> {
-        const managerPaths = this.manager as unknown as { instancesPath?: string; secretsPath?: string };
-        const paths = [
-            this.getInstanceConfigPath(),
-            managerPaths.instancesPath,
-            managerPaths.secretsPath,
-        ].filter((value): value is string => Boolean(value));
-        return paths.map((filePath) => ({
-            path: filePath,
-            content: fs.existsSync(filePath) ? fs.readFileSync(filePath) : undefined,
-        }));
-    }
-
-    private restoreWorkspaceMigrationSnapshot(snapshot: Array<{ path: string; content?: Buffer }>): void {
-        for (const entry of snapshot) {
-            if (entry.content === undefined) {
-                fs.rmSync(entry.path, { force: true });
-                continue;
-            }
-            fs.mkdirSync(path.dirname(entry.path), { recursive: true });
-            fs.writeFileSync(entry.path, entry.content);
-        }
-    }
-
-    private formatIncompleteWorkspaceMigrationError(plan: IWorkspaceMigrationPlan): string {
-        const legacyCount = plan.legacyMigration?.instances.length || 0;
-        const globalCount = plan.globalInstancesMigration?.instances.length || 0;
-        return [
-            'Workspace migration did not complete atomically; all migration file changes were rolled back.',
-            `Remaining legacy migration items: ${legacyCount}`,
-            `Remaining global/v2 migration items: ${globalCount}`,
-            'Run `n8nac workspace migrate --json` to inspect the remaining plan before retrying.',
-        ].join(' ');
-    }
-
-    private readWorkspaceConfigFile(): { version: 3 } | IPersistedWorkspaceConfigV4 {
+    private readWorkspaceConfigFile(): IPersistedWorkspaceConfigV4 {
         const configPath = this.getInstanceConfigPath();
-        if (!fs.existsSync(configPath)) return { version: 3 };
+        if (!fs.existsSync(configPath)) return { version: 4, environmentTargets: [], environments: [] };
         const raw = JSON.parse(fs.readFileSync(configPath, 'utf8'));
         if (raw?.version === 4) {
             return this.sanitizeV4Config(raw);
         }
-        if (raw?.version !== undefined && raw.version !== 3) {
-            throw new Error(`Unsupported legacy n8n workspace config version: ${raw.version}`);
-        }
-        return { version: 3 };
-    }
-
-    private readWorkspaceConfigFileSafe(): IPersistedWorkspaceConfigV4 {
-        try {
-            return this.ensureV4WorkspaceConfig();
-        } catch {
-            return { version: 4, environmentTargets: [], environments: [] };
-        }
+        const version = raw?.version === undefined ? 'missing' : String(raw.version);
+        throw new Error(`Unsupported n8nac workspace config version: ${version}. Recreate a V4 workspace environment with \`n8nac env add <name> --base-url <url> --workflows-path workflows/<name>\`.`);
     }
 
     isWorkspaceConfigV4(): boolean {
@@ -1797,14 +1072,11 @@ export class ConfigService {
     }
 
     private assertLegacyWorkspaceOverridesWritable(): void {
-        if (this.isWorkspaceConfigV4()) {
-            throw new Error('This workspace uses v4 environments. Use `n8nac instance-target ...` and `n8nac env ...` instead of legacy workspace singleton commands.');
-        }
+        throw new Error('Legacy workspace singleton commands are not supported. Use `n8nac env ...` with V4 workspace environments.');
     }
 
     private ensureV4WorkspaceConfig(): IPersistedWorkspaceConfigV4 {
-        const config = this.readWorkspaceConfigFile();
-        return config.version === 4 ? config : this.v3ToV4WorkspaceConfig();
+        return this.readWorkspaceConfigFile();
     }
 
     private sanitizeV4Config(raw: any): IPersistedWorkspaceConfigV4 {
@@ -1818,8 +1090,8 @@ export class ConfigService {
         const rawInstanceTargets = rawTargets as unknown[];
         const rawEnvironments = raw.environments as unknown[];
         const environmentTargets = rawInstanceTargets.map((target, index) => this.sanitizeInstanceTarget(target, index));
-        const environments = rawEnvironments.map((environment, index) => this.sanitizeEnvironment(environment, index));
-        this.assertUniqueIdsAndNames(environmentTargets, 'instance target');
+        const environments = this.ensureEnvironmentWorkflowsPaths(rawEnvironments.map((environment, index) => this.sanitizeEnvironment(environment, index)));
+        this.assertUniqueIds(environmentTargets, 'instance target');
         this.assertUniqueIdsAndNames(environments, 'environment');
         const targetIds = new Set(environmentTargets.map((target) => target.id));
         for (const environment of environments) {
@@ -1866,10 +1138,11 @@ export class ConfigService {
                 name,
                 kind: 'external-instance' as const,
                 url,
-                instanceIdentifier: this.canonicalWorkflowInstanceIdentifier(target.instanceIdentifier || target.instance?.instanceIdentifier),
+                instanceIdentifier: this.canonicalWorkflowInstanceIdentifier(target.instanceIdentifier || target.instance?.instanceIdentifier)
+                    || cleanOptional(target.instanceIdentifier || target.instance?.instanceIdentifier),
                 instanceUserIdentifier: this.readStoredInstanceUserIdentifier(
                     target.instanceUserIdentifier || target.instance?.instanceUserIdentifier || target.instanceIdentifier || target.instance?.instanceIdentifier,
-                ),
+                ) || cleanOptional(target.instanceUserIdentifier || target.instance?.instanceUserIdentifier),
                 verification: target.verification || target.instance?.verification,
                 description: cleanOptional(target.description),
             });
@@ -1878,15 +1151,46 @@ export class ConfigService {
     }
 
     private assertUniqueIdsAndNames<T extends { id: string; name: string }>(items: T[], label: string): void {
-        const ids = new Set<string>();
+        this.assertUniqueIds(items, label);
         const names = new Set<string>();
         for (const item of items) {
-            if (ids.has(item.id)) throw new Error(`Invalid v4 workspace config: duplicate ${label} ID "${item.id}".`);
-            ids.add(item.id);
             const name = item.name.toLowerCase();
             if (names.has(name)) throw new Error(`Invalid v4 workspace config: duplicate ${label} name "${item.name}".`);
             names.add(name);
         }
+    }
+
+    private assertUniqueIds<T extends { id: string }>(items: T[], label: string): void {
+        const ids = new Set<string>();
+        for (const item of items) {
+            if (ids.has(item.id)) throw new Error(`Invalid v4 workspace config: duplicate ${label} ID "${item.id}".`);
+            ids.add(item.id);
+        }
+    }
+
+    private ensureEnvironmentWorkflowsPaths(environments: IWorkspaceEnvironment[]): IWorkspaceEnvironment[] {
+        const usedSlugs = new Set<string>();
+        const normalized = environments.map((environment) => {
+            const syncSlug = environment.syncSlug
+                ? this.createEnvironmentSyncSlug(environment.syncSlug)
+                : undefined;
+            if (syncSlug) {
+                const key = syncSlug.toLowerCase();
+                if (usedSlugs.has(key)) {
+                    throw new Error(`Invalid v4 workspace config: duplicate environment sync slug "${syncSlug}".`);
+                }
+                usedSlugs.add(key);
+            }
+            return { ...environment, syncSlug };
+        });
+
+        return normalized.map((environment) => {
+            const syncSlug = environment.syncSlug || this.uniqueEnvironmentSyncSlug(environment.name, [], usedSlugs);
+            usedSlugs.add(syncSlug.toLowerCase());
+            const workflowsPath = environment.workflowsPath
+                || this.resolveInputWorkflowsPath({ syncFolder: environment.syncFolder, syncSlug }, environments, environment.name);
+            return stripUndefined({ ...environment, syncSlug, workflowsPath, workflowDir: undefined });
+        });
     }
 
     private sanitizeEnvironment(environment: any, index: number): IWorkspaceEnvironment {
@@ -1896,55 +1200,82 @@ export class ConfigService {
         const id = cleanOptional(environment.id);
         const name = cleanOptional(environment.name) || id;
         const environmentTargetId = cleanOptional(environment.environmentTargetId) || cleanOptional(environment.instanceTargetId);
+        const workflowsPath = cleanOptional(environment.workflowsPath) || cleanOptional(environment.workflowDir);
         const syncFolder = cleanOptional(environment.syncFolder);
-        if (!id || !name || !environmentTargetId || !syncFolder) {
-            throw new Error(`Invalid v4 workspace config: environment at index ${index} needs id, name, environmentTargetId, and syncFolder.`);
+        if (!id || !name || !environmentTargetId || (!workflowsPath && !syncFolder)) {
+            throw new Error(`Invalid v4 workspace config: environment at index ${index} needs id, name, environmentTargetId, and workflowsPath.`);
         }
         return stripUndefined({
             id,
             name,
+            syncSlug: cleanOptional(environment.syncSlug),
+            legacyWorkflowDir: cleanOptional(environment.legacyWorkflowDir),
             environmentTargetId,
             projectId: cleanOptional(environment.projectId),
             projectName: cleanOptional(environment.projectName),
+            workflowsPath,
             syncFolder,
             folderSync: typeof environment.folderSync === 'boolean' ? environment.folderSync : undefined,
             customNodesPath: cleanOptional(environment.customNodesPath),
             description: cleanOptional(environment.description),
+            nativeMcp: this.sanitizeNativeMcpConfig(environment.nativeMcp),
         });
     }
 
-    private v3ToV4WorkspaceConfig(): IPersistedWorkspaceConfigV4 {
-        const overrides = tryResolve(() => this.manager.readWorkspaceOverrides(this.workspaceRoot)) || { version: 3 as const };
-        const hasWorkspaceOverrides = Boolean(
-            overrides.activeInstanceId
-            || overrides.syncFolder
-            || overrides.projectId
-            || overrides.projectName
-            || overrides.folderSync !== undefined
-            || overrides.customNodesPath
-        );
-        const managedInstanceId = hasWorkspaceOverrides ? (overrides.activeInstanceId || this.manager.getGlobalConfig().activeInstanceId) : undefined;
-        const environmentTargets: IEnvironmentTarget[] = managedInstanceId
-            ? [{ id: 'default-instance', name: 'Default Instance', kind: 'managed-instance', managedInstanceId }]
-            : [];
-        const environments: IWorkspaceEnvironment[] = managedInstanceId
-            ? [stripUndefined({
-                id: 'default',
-                name: 'Default',
-                environmentTargetId: 'default-instance',
-                projectId: overrides.projectId,
-                projectName: overrides.projectName,
-                syncFolder: overrides.syncFolder || DEFAULT_SYNC_FOLDER,
-                folderSync: overrides.folderSync,
-                customNodesPath: overrides.customNodesPath,
-            })]
-            : [];
-        return {
-            version: 4,
-            activeEnvironmentId: environments[0]?.id,
-            environmentTargets,
-            environments,
-        };
+    private sanitizeNativeMcpConfig(nativeMcp: unknown): IWorkspaceNativeMcpConfig | undefined {
+        if (nativeMcp === undefined || nativeMcp === null) return undefined;
+        if (!nativeMcp || typeof nativeMcp !== 'object' || Array.isArray(nativeMcp)) {
+            throw new Error('Invalid v4 workspace config: environment nativeMcp must be an object.');
+        }
+        this.assertNoNativeMcpSecrets(nativeMcp);
+        const input = nativeMcp as Record<string, unknown>;
+        const url = cleanOptional(input.url);
+        if (url) {
+            this.assertNativeMcpUrl(url);
+        }
+        const timeoutMs = this.parseOptionalPositiveInteger(input.timeoutMs, 'nativeMcp.timeoutMs');
+        const mode: IWorkspaceNativeMcpMode | undefined = input.mode === 'direct' ? 'direct' : input.mode === 'assist' ? 'assist' : undefined;
+        return stripUndefined({
+            enabled: typeof input.enabled === 'boolean' ? input.enabled : url ? true : undefined,
+            url,
+            mode,
+            timeoutMs,
+            allowRemoteExposure: typeof input.allowRemoteExposure === 'boolean' ? input.allowRemoteExposure : undefined,
+            allowExecutionData: typeof input.allowExecutionData === 'boolean' ? input.allowExecutionData : undefined,
+            requireSyncBack: typeof input.requireSyncBack === 'boolean' ? input.requireSyncBack : undefined,
+        });
+    }
+
+    private assertNoNativeMcpSecrets(value: unknown, pathLabel = 'nativeMcp'): void {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+        const secretKeys = new Set(['token', 'apikey', 'api_key', 'password', 'secret', 'authorization', 'bearertoken', 'access_token', 'accesstoken', 'clientsecret', 'client_secret']);
+        for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+            if (secretKeys.has(key.toLowerCase())) {
+                throw new Error(`Invalid v4 workspace config: ${pathLabel}.${key} must not contain secrets.`);
+            }
+            this.assertNoNativeMcpSecrets(child, `${pathLabel}.${key}`);
+        }
+    }
+
+    private assertNativeMcpUrl(url: string): void {
+        let parsed: URL;
+        try {
+            parsed = new URL(url);
+        } catch {
+            throw new Error(`Invalid v4 workspace config: nativeMcp.url must be a valid HTTP URL.`);
+        }
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+            throw new Error(`Invalid v4 workspace config: nativeMcp.url must use http or https.`);
+        }
+    }
+
+    private parseOptionalPositiveInteger(value: unknown, label: string): number | undefined {
+        if (value === undefined || value === null || value === '') return undefined;
+        const parsed = typeof value === 'number' ? value : Number.parseInt(String(value), 10);
+        if (!Number.isFinite(parsed) || parsed <= 0) {
+            throw new Error(`Invalid v4 workspace config: ${label} must be a positive integer.`);
+        }
+        return parsed;
     }
 
     private writeWorkspaceConfigV4(config: IPersistedWorkspaceConfigV4): void {
@@ -1999,7 +1330,6 @@ export class ConfigService {
     }
 
     private resolveEnvironmentFromTarget(environment: IWorkspaceEnvironment, target: IEnvironmentTarget, source: IResolvedWorkspaceEnvironment['sources']['environment']): IResolvedWorkspaceEnvironment {
-        const syncFolder = this.resolveWorkspacePath(environment.syncFolder);
         if (target.kind === 'managed-instance') {
             const instance = this.manager.getInstance(target.managedInstanceId);
             if (!instance) throw new Error(`Workspace environment "${environment.name}" references missing global n8n-manager instance: ${target.managedInstanceId}`);
@@ -2010,6 +1340,8 @@ export class ConfigService {
             const projectId = environment.projectId || instance.defaultProject?.id;
             const projectName = environment.projectName || instance.defaultProject?.name;
             const identity = this.resolveManagedEnvironmentIdentity(instance, host, apiKey);
+            const workflowsPath = this.resolveEnvironmentWorkflowsPath(environment);
+            const syncFolder = workflowsPath;
             return {
                 environment,
                 environmentTarget: target,
@@ -2027,18 +1359,14 @@ export class ConfigService {
                 apiKeySource: envApiKey ? 'env' : globalApiKey ? 'global' : 'missing',
                 apiKeyAvailable: Boolean(apiKey),
                 accessStatus: this.deriveAccessStatus({ host, apiKey, projectId, projectName, verification: envApiKey ? undefined : instance.verification }),
+                nativeMcp: this.nativeMcpToSnapshot(environment.nativeMcp, environment.id),
+                workflowsPath,
                 syncFolder,
                 projectId,
                 projectName,
                 instanceIdentifier: identity.instanceIdentifier,
                 instanceUserIdentifier: identity.instanceUserIdentifier,
-                workflowDir: this.buildEnvironmentWorkflowDir({
-                    syncFolder,
-                    environmentId: environment.id,
-                    instanceIdentifier: identity.instanceIdentifier,
-                    instanceUserIdentifier: identity.instanceUserIdentifier,
-                    projectId,
-                }),
+                workflowDir: workflowsPath,
                 folderSync: environment.folderSync ?? false,
                 customNodesPath: environment.customNodesPath,
                 sources: {
@@ -2056,6 +1384,8 @@ export class ConfigService {
         const globalApiKey = this.getApiKey(host);
         const apiKey = envApiKey || workspaceApiKey || globalApiKey;
         const identity = this.resolveExternalEnvironmentIdentity(target, apiKey);
+        const workflowsPath = this.resolveEnvironmentWorkflowsPath(environment);
+        const syncFolder = workflowsPath;
         return {
             environment,
             environmentTarget: target,
@@ -2071,18 +1401,14 @@ export class ConfigService {
             apiKeySource: envApiKey ? 'env' : workspaceApiKey ? 'workspace-local' : globalApiKey ? 'global' : 'missing',
             apiKeyAvailable: Boolean(apiKey),
             accessStatus: this.deriveAccessStatus({ host, apiKey, projectId: environment.projectId, projectName: environment.projectName, verification: target.verification }),
+            nativeMcp: this.nativeMcpToSnapshot(environment.nativeMcp, environment.id),
+            workflowsPath,
             syncFolder,
             projectId: environment.projectId,
             projectName: environment.projectName,
             instanceIdentifier: identity.instanceIdentifier,
             instanceUserIdentifier: identity.instanceUserIdentifier,
-            workflowDir: this.buildEnvironmentWorkflowDir({
-                syncFolder,
-                environmentId: environment.id,
-                instanceIdentifier: identity.instanceIdentifier,
-                instanceUserIdentifier: identity.instanceUserIdentifier,
-                projectId: environment.projectId,
-            }),
+            workflowDir: workflowsPath,
             folderSync: environment.folderSync ?? false,
             customNodesPath: environment.customNodesPath,
             sources: {
@@ -2099,8 +1425,10 @@ export class ConfigService {
             `N8NAC_ENV_${envVarSlug(environment.id)}_API_KEY`,
             `N8NAC_ENV_${envVarSlug(environment.name)}_API_KEY`,
             `N8NAC_TARGET_${envVarSlug(target.id)}_API_KEY`,
-            `N8NAC_TARGET_${envVarSlug(target.name)}_API_KEY`,
         ];
+        if (this.isUniqueInstanceTargetName(target)) {
+            candidates.push(`N8NAC_TARGET_${envVarSlug(target.name)}_API_KEY`);
+        }
         for (const key of candidates) {
             const value = process.env[key]?.trim().replace(/^['"]|['"]$/g, '');
             if (value) return value;
@@ -2111,13 +1439,21 @@ export class ConfigService {
     private readTargetEnvApiKey(target: IEnvironmentTarget): string | undefined {
         const candidates = [
             `N8NAC_TARGET_${envVarSlug(target.id)}_API_KEY`,
-            `N8NAC_TARGET_${envVarSlug(target.name)}_API_KEY`,
         ];
+        if (this.isUniqueInstanceTargetName(target)) {
+            candidates.push(`N8NAC_TARGET_${envVarSlug(target.name)}_API_KEY`);
+        }
         for (const key of candidates) {
             const value = process.env[key]?.trim().replace(/^["']|["']$/g, '');
             if (value) return value;
         }
         return undefined;
+    }
+
+    private isUniqueInstanceTargetName(target: IEnvironmentTarget): boolean {
+        const name = target.name.toLowerCase();
+        const config = this.ensureV4WorkspaceConfig();
+        return config.environmentTargets.filter((item) => item.name.toLowerCase() === name).length === 1;
     }
 
     private resolveExistingGlobalInstanceRef(managedInstanceId: unknown): string {
@@ -2132,12 +1468,13 @@ export class ConfigService {
     private environmentToLocalConfig(environment: IResolvedWorkspaceEnvironment): Partial<ILocalConfig> {
         return stripUndefined({
             host: environment.host,
-            syncFolder: environment.syncFolder,
+            workflowsPath: environment.workflowsPath,
+            workflowDir: environment.workflowsPath,
+            syncFolder: environment.workflowsPath,
             projectId: environment.projectId,
             projectName: environment.projectName,
             instanceIdentifier: environment.instanceIdentifier,
             instanceUserIdentifier: environment.instanceUserIdentifier,
-            workflowDir: environment.workflowDir,
             customNodesPath: environment.customNodesPath,
             folderSync: environment.folderSync,
         });
@@ -2160,13 +1497,27 @@ export class ConfigService {
             managedInstanceId: resolved.managedInstanceId,
             instanceName: resolved.activeInstanceName,
             url: resolved.sourceKind === 'external-instance' ? resolved.host : undefined,
-            workflowDir: resolved.workflowDir,
+            workflowsPathResolved: resolved.workflowsPath,
+            workflowDir: resolved.workflowsPath,
             instanceIdentifier: resolved.instanceIdentifier,
             instanceUserIdentifier: resolved.instanceUserIdentifier,
             apiKeyAvailable: resolved.apiKeyAvailable,
             credentialSource: resolved.apiKeySource,
             accessStatus: resolved.accessStatus,
+            nativeMcp: this.nativeMcpToSnapshot(environment.nativeMcp, environment.id),
         });
+    }
+
+    private nativeMcpToSnapshot(nativeMcp: IWorkspaceNativeMcpConfig | undefined, environmentId: string): IWorkspaceNativeMcpConfig | undefined {
+        if (!nativeMcp) return undefined;
+        return stripUndefined({
+            ...nativeMcp,
+            tokenConfigured: Boolean(this.manager.getApiKey(this.nativeMcpSecretKey(environmentId))),
+        });
+    }
+
+    private nativeMcpSecretKey(environmentId: string): string {
+        return `native-mcp:${environmentId}`;
     }
 
     private environmentTargetToSnapshot(target: IEnvironmentTarget): IEnvironmentTarget {
@@ -2229,12 +1580,13 @@ export class ConfigService {
             id: environment.activeInstanceId || environment.environmentTargetId,
             name: environment.activeInstanceName || environment.environmentTargetName,
             host: environment.host,
-            syncFolder: environment.syncFolder,
+            workflowsPath: environment.workflowsPath,
+            workflowDir: environment.workflowsPath,
+            syncFolder: environment.workflowsPath,
             projectId: environment.projectId,
             projectName: environment.projectName,
             instanceIdentifier: environment.instanceIdentifier,
             instanceUserIdentifier: environment.instanceUserIdentifier,
-            workflowDir: environment.workflowDir,
             customNodesPath: environment.customNodesPath,
             folderSync: environment.folderSync,
         });
@@ -2258,12 +1610,13 @@ export class ConfigService {
             host: environment.host,
             baseUrl: environment.host,
             apiKey: environment.apiKey,
-            syncFolder: environment.syncFolder,
+            workflowsPath: environment.workflowsPath,
+            workflowDir: environment.workflowsPath,
+            syncFolder: environment.workflowsPath,
             projectId: environment.projectId,
             projectName: environment.projectName,
             instanceIdentifier: environment.instanceIdentifier,
             instanceUserIdentifier: environment.instanceUserIdentifier,
-            workflowDir: environment.workflowDir,
             folderSync: environment.folderSync ?? false,
             customNodesPath: environment.customNodesPath,
             environmentId: environment.environmentId,
@@ -2286,6 +1639,21 @@ export class ConfigService {
         let counter = 2;
         while (existingIds.includes(`${base}-${counter}`)) counter += 1;
         return `${base}-${counter}`;
+    }
+
+    private uniqueEnvironmentSyncSlug(baseName: string, environments: Array<Pick<IWorkspaceEnvironment, 'syncSlug'>>, usedSlugs = new Set<string>()): string {
+        for (const environment of environments) {
+            if (environment.syncSlug) usedSlugs.add(this.createEnvironmentSyncSlug(environment.syncSlug).toLowerCase());
+        }
+        const base = this.createEnvironmentSyncSlug(baseName);
+        if (!usedSlugs.has(base.toLowerCase())) return base;
+        let counter = 2;
+        while (usedSlugs.has(`${base}-${counter}`.toLowerCase())) counter += 1;
+        return `${base}-${counter}`;
+    }
+
+    private createEnvironmentSyncSlug(value: string): string {
+        return this.slugId(value);
     }
 
     private uniqueDisplayName(baseName: string, existingNames: Set<string>): string {
@@ -2387,19 +1755,6 @@ export class ConfigService {
         });
     }
 
-    private writeWorkspaceFields(instanceId: string, config: Partial<ILocalConfig>, setActive: boolean): void {
-        const current = tryResolve(() => this.manager.readWorkspaceOverrides(this.workspaceRoot)) || { version: 3 as const };
-        this.manager.writeWorkspaceOverrides(this.workspaceRoot, {
-            ...current,
-            activeInstanceId: setActive ? instanceId : current.activeInstanceId,
-            syncFolder: config.syncFolder || current.syncFolder,
-            projectId: config.projectId || current.projectId,
-            projectName: config.projectName || current.projectName,
-            folderSync: config.folderSync ?? current.folderSync,
-            customNodesPath: config.customNodesPath || current.customNodesPath,
-        });
-    }
-
     private assertNoLegacyWorkspaceFields(config: Partial<ILocalConfig>): void {
         const fields = [
             config.syncFolder ? 'syncFolder' : undefined,
@@ -2411,17 +1766,6 @@ export class ConfigService {
         if (fields.length > 0) {
             throw new Error(`This workspace uses v4 environments. Configure ${fields.join(', ')} with \`n8nac env ...\` instead of legacy workspace fields.`);
         }
-    }
-
-    private resolveWorkspaceContext(instanceId?: string): EffectiveN8nContext {
-        const context = this.manager.resolveEffectiveContext({
-            workspaceRoot: this.workspaceRoot,
-            instanceId,
-            syncFolderDefault: 'workspace',
-        });
-        return {
-            ...context,
-        };
     }
 
     private toInstanceProfile(instance: GlobalN8nInstance, overrides?: Partial<ILocalConfig>): IInstanceProfile {
@@ -2439,49 +1783,6 @@ export class ConfigService {
             folderSync: overrides?.folderSync,
             verification: instance.verification,
         };
-    }
-
-    private contextToInstanceProfile(context: EffectiveN8nContext): IInstanceProfile {
-        const instanceIdentifier = context.instanceIdentifier;
-        const instanceUserIdentifier = this.canonicalInstanceUserIdentifier((context as EffectiveN8nContext & { instanceUserIdentifier?: string }).instanceUserIdentifier)
-            || this.readStoredInstanceUserIdentifier(context.instanceIdentifier);
-        return {
-            ...this.toInstanceProfile(context.instance),
-            host: context.host,
-            syncFolder: context.syncFolder,
-            projectId: context.projectId,
-            projectName: context.projectName,
-            instanceIdentifier,
-            instanceUserIdentifier,
-            workflowDir: (context as EffectiveN8nContext & { workflowDir?: string }).workflowDir
-                || this.buildWorkflowDir(context.syncFolder, instanceIdentifier, context.projectName),
-            customNodesPath: context.customNodesPath,
-            folderSync: context.folderSync,
-        };
-    }
-
-    private contextToLocalConfig(context: EffectiveN8nContext): Partial<ILocalConfig> {
-        return this.toLocalConfig(this.contextToInstanceProfile(context));
-    }
-
-    private toLocalConfig(profile?: Partial<ILocalConfig>): Partial<ILocalConfig> {
-        if (!profile) return {};
-        const workflowDir = profile.workflowDir || this.buildWorkflowDir(
-            profile.syncFolder,
-            profile.instanceIdentifier,
-            profile.projectName,
-        );
-        return stripUndefined({
-            host: profile.host,
-            syncFolder: profile.syncFolder,
-            projectId: profile.projectId,
-            projectName: profile.projectName,
-            instanceIdentifier: profile.instanceIdentifier,
-            instanceUserIdentifier: profile.instanceUserIdentifier,
-            workflowDir,
-            customNodesPath: profile.customNodesPath,
-            folderSync: profile.folderSync,
-        });
     }
 
     private async verifyConnection(host: string, apiKey: string, client?: IInstanceVerificationClient): Promise<IInstanceVerification> {
@@ -2517,31 +1818,6 @@ export class ConfigService {
         }
     }
 
-    private getGlobalExternalInstanceUrl(instance: GlobalN8nInstance): string | undefined {
-        if (instance.mode === 'managed-local-docker' || instance.mode === 'generation-only') return undefined;
-        const mode = String(instance.mode);
-        if (mode !== 'existing' && mode !== 'external-instance') return undefined;
-        const compatibilityUrl = (instance as GlobalN8nInstance & { url?: string }).url;
-        return cleanOptional(instance.baseUrl) || cleanOptional(compatibilityUrl);
-    }
-
-    private preserveWorkspaceMigrationApiKeyFallback(fallback: IWorkspaceMigrationOptions['legacyApiKeyFallback'], migratedInstances: IInstanceProfile[]): void {
-        const apiKey = fallback?.apiKey?.trim();
-        if (!apiKey) return;
-        const environment = this.resolveEnvironment();
-        const environmentHost = this.normalizeHost(environment.host || '');
-        if (!environmentHost) return;
-        if (fallback?.host && this.normalizeHost(fallback.host) !== environmentHost) return;
-        const migratedInstance = migratedInstances.find((instance) => this.normalizeHost(instance.host || '') === environmentHost);
-        this.saveLocalConfig({ host: environmentHost }, {
-            instanceId: migratedInstance?.id,
-            instanceName: environment.activeInstanceName || environment.environmentTargetName,
-            createNew: !migratedInstance?.id,
-            setActive: false,
-            apiKey,
-        });
-    }
-
     private resolveStoredBaseUrl(current: GlobalN8nInstance | undefined, requestedHost?: string): string | undefined {
         const host = requestedHost || current?.baseUrl;
         if (
@@ -2555,29 +1831,66 @@ export class ConfigService {
         return host;
     }
 
-    private buildWorkflowDir(syncFolder?: string, instanceIdentifier?: string, projectName?: string): string | undefined {
-        return syncFolder && instanceIdentifier && projectName
-            ? path.join(syncFolder, instanceIdentifier, createProjectSlug(projectName))
-            : undefined;
+    private resolveInputWorkflowsPath(input: {
+        workflowsPath?: string;
+        workflowDir?: string;
+        syncFolder?: string;
+        syncSlug?: string;
+    }, environments: Array<Pick<IWorkspaceEnvironment, 'workflowsPath' | 'syncFolder' | 'syncSlug'>>, name: string): string {
+        const explicit = cleanOptional(input.workflowsPath) || cleanOptional(input.workflowDir);
+        if (explicit) return explicit;
+        const syncFolder = cleanOptional(input.syncFolder) || DEFAULT_SYNC_FOLDER;
+        const syncSlug = input.syncSlug || this.uniqueEnvironmentSyncSlug(name, environments);
+        return path.join(syncFolder, syncSlug);
     }
 
-    private buildEnvironmentWorkflowDir(input: {
-        syncFolder?: string;
-        environmentId?: string;
-        instanceIdentifier?: string;
-        instanceUserIdentifier?: string;
-        projectId?: string;
-    }): string | undefined {
-        if (!input.syncFolder || !input.environmentId || !input.instanceIdentifier || !input.instanceUserIdentifier || !input.projectId) {
-            return undefined;
-        }
+    private patchWorkflowsPath(environment: IWorkspaceEnvironment, patch: Partial<Pick<IWorkspaceEnvironment, 'workflowsPath' | 'workflowDir' | 'syncFolder'>>): string | undefined {
+        const explicit = patch.workflowsPath !== undefined
+            ? cleanRequired(patch.workflowsPath, 'Workflows path')
+            : patch.workflowDir !== undefined
+                ? cleanRequired(patch.workflowDir, 'Workflow directory')
+                : undefined;
+        if (explicit !== undefined) return explicit;
+        if (patch.syncFolder === undefined) return undefined;
+        return this.resolveInputWorkflowsPath({
+            syncFolder: cleanRequired(patch.syncFolder, 'Sync folder'),
+            syncSlug: environment.syncSlug,
+        }, [], environment.name);
+    }
 
-        return path.join(input.syncFolder, createWorkflowDirNameV1({
-            environmentId: input.environmentId,
-            instanceIdentifier: input.instanceIdentifier,
-            instanceUserIdentifier: input.instanceUserIdentifier,
-            projectId: input.projectId,
-        }));
+    private resolveEnvironmentWorkflowsPath(environment: IWorkspaceEnvironment): string {
+        return this.resolveWorkspacePath(cleanRequired(environment.workflowsPath, 'Workflows path'));
+    }
+
+    private migrateWorkflowsPath(previousPath: string, nextPath: string): void {
+        const previous = this.resolveWorkspacePath(previousPath);
+        const next = this.resolveWorkspacePath(nextPath);
+        if (previous === next || !fs.existsSync(previous)) return;
+        const relative = path.relative(previous, next);
+        const reverseRelative = path.relative(next, previous);
+        if (!relative || (!relative.startsWith('..') && !path.isAbsolute(relative)) || !reverseRelative || (!reverseRelative.startsWith('..') && !path.isAbsolute(reverseRelative))) {
+            throw new Error('Cannot migrate workflowsPath into itself or one of its child directories.');
+        }
+        if (fs.existsSync(next) && !this.isDirectoryEmpty(next)) {
+            throw new Error(`Cannot migrate workflowsPath to "${nextPath}" because the destination is not empty.`);
+        }
+        fs.mkdirSync(path.dirname(next), { recursive: true });
+        if (fs.existsSync(next)) fs.rmSync(next, { recursive: true, force: true });
+        try {
+            fs.renameSync(previous, next);
+        } catch (error: any) {
+            if (error?.code !== 'EXDEV') throw error;
+            fs.cpSync(previous, next, { recursive: true, errorOnExist: false });
+            fs.rmSync(previous, { recursive: true, force: true });
+        }
+    }
+
+    private isDirectoryEmpty(directory: string): boolean {
+        try {
+            return fs.statSync(directory).isDirectory() && fs.readdirSync(directory).length === 0;
+        } catch {
+            return false;
+        }
     }
 
     private findConfigRoot(startDir: string): string {

@@ -1,5 +1,35 @@
 # @n8n-as-code/n8nac
 
+## [2.2.0](https://github.com/EtienneLescot/n8n-as-code/compare/@n8n-as-code/n8nac@v2.1.4...@n8n-as-code/n8nac@v2.2.0) (2026-06-09)
+
+### Features
+
+* **vscode:** discover native MCP tools dynamically ([57c9c03](https://github.com/EtienneLescot/n8n-as-code/commit/57c9c03c43f8501ab2e0b1753d79db9f41e61a0d))
+* **mcp:** scope native assist config to environments ([f51a532](https://github.com/EtienneLescot/n8n-as-code/commit/f51a5326dfc2d905292dc685cc32b13dd4aa64fd))
+* **mcp:** add optional native n8n MCP assist ([e1d32e4](https://github.com/EtienneLescot/n8n-as-code/commit/e1d32e451145b8d42c345fe03710c91c5e9eea41))
+
+### Bug Fixes
+
+* **mcp:** gate native assist exposure ([1252b6b](https://github.com/EtienneLescot/n8n-as-code/commit/1252b6bb2f76e1ce58ea2d64b3748a930f0c1618))
+
+### Documentation
+
+* **mcp:** clarify native execution strategy ([21a86a8](https://github.com/EtienneLescot/n8n-as-code/commit/21a86a87862e3ccdb81c9c65c3e7c424bea019ec))
+
+## [2.1.4](https://github.com/EtienneLescot/n8n-as-code/compare/@n8n-as-code/n8nac@v2.1.3...@n8n-as-code/n8nac@v2.1.4) (2026-06-05)
+
+### Bug Fixes
+
+* address v4 workspace review feedback ([d111a7f](https://github.com/EtienneLescot/n8n-as-code/commit/d111a7fcc31cbdc2a3309cf4979395ee8f179880))
+* require v4 workspace environments ([6967d4d](https://github.com/EtienneLescot/n8n-as-code/commit/6967d4d0ecbaa4d18fe0077f42531b215f574d5e))
+
+## [2.1.3](https://github.com/EtienneLescot/n8n-as-code/compare/@n8n-as-code/n8nac@v2.1.2...@n8n-as-code/n8nac@v2.1.3) (2026-05-21)
+
+### Dependencies
+
+* The following workspace dependencies were updated
+    * @n8n-as-code/telemetry bumped from 2.0.0 to 2.0.1
+
 ## [2.1.2](https://github.com/EtienneLescot/n8n-as-code/compare/@n8n-as-code/n8nac@v2.1.1...@n8n-as-code/n8nac@v2.1.2) (2026-05-13)
 
 ### Documentation

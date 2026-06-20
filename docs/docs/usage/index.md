@@ -13,9 +13,8 @@ n8n-as-code uses one workflow model across all surfaces: workspace environments,
 | Group | Command | Purpose |
 |---|---|---|
 | Primary Usage | `n8nac env` | Workspace environments and active sync context |
-| Workspace Maintenance | `n8nac workspace` | Readiness and unified workspace migration |
+| Workspace Inspection | `n8nac workspace` | V4 workspace snapshot |
 | Managed Local Instances | `n8n-manager` | Local managed instances, Docker, tunnels |
-| Hidden Compatibility | old `target`, `setup`, and workspace mutation commands | Compatibility only |
 
 [Command Glossary](/docs/usage/commands)
 
@@ -30,12 +29,13 @@ The recommended experience. It provides the n8n sidebar, embedded canvas, explic
 Use the CLI for scripts, CI, and direct terminal workflows:
 
 ```bash
-n8nac env add Dev --base-url <url> --sync-folder workflows/dev
+n8nac env add Dev --base-url <url> --workflows-path workflows/dev
 n8nac env auth set Dev --api-key-stdin
 n8nac env use Dev
 n8nac list
 n8nac pull <workflow-id>
 n8nac push workflows/dev/my-workflow.workflow.ts --verify
+n8nac promote --from Dev --to Prod --dry-run
 ```
 
 [CLI Guide](/docs/usage/cli)

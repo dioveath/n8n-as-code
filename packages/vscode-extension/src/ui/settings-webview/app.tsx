@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useMemo } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Provider, useDispatch, useSelector } from 'react-redux';
 import { actions, store, type EnvironmentDraft, type RootState } from './store.js';
@@ -8,13 +8,15 @@ declare const acquireVsCodeApi: undefined | (() => { postMessage(message: unknow
 
 const vscode = typeof acquireVsCodeApi === 'function' ? acquireVsCodeApi() : { postMessage: (message: unknown) => console.log(message) };
 const post = (message: Record<string, unknown>) => vscode.postMessage(message);
+const EMPTY_OBJECT: Record<string, never> = {};
+const EMPTY_ARRAY: any[] = [];
 
 function useAppDispatch() { return useDispatch<typeof store.dispatch>(); }
-function server(state: RootState): any { return state.server || {}; }
-function instances(state: RootState): any[] { return server(state).global?.instances || []; }
-function workspace(state: RootState): any { return server(state).workspace || {}; }
-function environments(state: RootState): any[] { return workspace(state).environments || []; }
-function targets(state: RootState): any[] { return workspace(state).environmentTargets || []; }
+function server(state: RootState): any { return state.server || EMPTY_OBJECT; }
+function instances(state: RootState): any[] { return server(state).global?.instances || EMPTY_ARRAY; }
+function workspace(state: RootState): any { return server(state).workspace || EMPTY_OBJECT; }
+function environments(state: RootState): any[] { return workspace(state).environments || EMPTY_ARRAY; }
+function targets(state: RootState): any[] { return workspace(state).environmentTargets || EMPTY_ARRAY; }
 function setupActive(state: RootState): boolean { return Object.values(state.jobs).some((job) => job.status === 'installing' || job.status === 'cancelling'); }
 
 function App() {
@@ -54,9 +56,9 @@ function App() {
       }
       if (message.type === 'projectsLoaded') dispatch(actions.environmentDraftProjectsReceived({ id: String(message.draftId || 'new'), requestKey: message.requestKey, projects: message.projects || [], selectedProjectId: message.selectedProjectId, selectedProjectName: message.selectedProjectName }));
       if (message.type === 'projectsError') dispatch(actions.environmentDraftProjectsReceived({ id: String(message.draftId || 'new'), requestKey: message.requestKey, error: message.message || 'Unable to load projects.' }));
+      if (message.type === 'nativeMcpTestResult') dispatch(actions.environmentDraftNativeMcpTestReceived({ id: String(message.draftId || 'new'), ok: Boolean(message.ok), message: String(message.message || '') }));
       if (message.type === 'managedCredentials') dispatch(actions.credentialsReceived(message.credentials));
       if (message.type === 'error') dispatch(actions.noticeShown({ tone: 'error', message: message.message || 'Unexpected error' }));
-      if (message.type === 'migrationCompleted') post({ type: 'refreshState' });
       if (message.type === 'saved') return;
     };
     window.addEventListener('message', listener);
@@ -74,7 +76,6 @@ function App() {
     </aside>
     <main className="page">
       {notice?.tone === 'error' ? <div className="inline-message notice error">{notice.message}</div> : null}
-      <MigrationBanner />
       {activeTab === 'environments' ? <EnvironmentsTab /> : null}
       {activeTab === 'managed-instances' ? <ManagedInstancesTab /> : null}
       {activeTab === 'agent-providers' ? <AgentProvidersTab /> : null}
@@ -82,20 +83,6 @@ function App() {
       <ActiveModal />
     </main>
   </div>;
-}
-
-function MigrationBanner() {
-  const migration = useSelector((state: RootState) => server(state).migration);
-  if (!migration?.required) return null;
-  const operations = Array.isArray(migration.operations) ? migration.operations : [];
-  const details = operations.map((operation: any) => {
-    const count = Number(operation.instanceCount || 0);
-    return count ? `${operation.id} (${count})` : operation.id;
-  }).filter(Boolean).join(', ');
-  return <section className="inline-message migration-banner">
-    <div><h2>Migration required</h2><p className="subtle">This workspace configuration needs to be migrated before it is fully up to date{details ? `: ${details}` : '.'}</p></div>
-    <button onClick={() => post({ type: 'migrateWorkspaceConfiguration' })}>Run migration</button>
-  </section>;
 }
 
 function normalizeTab(tab: string): any {
@@ -141,9 +128,9 @@ function EnvironmentCard({ env }: { env: any }) {
   const allInstances = useSelector(instances);
   const jobs = useSelector((state: RootState) => state.jobs);
   const pendingActiveEnvironmentId = useSelector((state: RootState) => state.ui.pendingActiveEnvironmentId || '');
-  const target = allTargets.find((item) => item.id === env.environmentTargetId);
-  const access = environmentAccessBadge(env.accessStatus || target?.accessStatus);
-  const managed = environmentManagedInstanceStatus(env, target, allInstances, jobs);
+  const target = useMemo(() => allTargets.find((item) => item.id === env.environmentTargetId), [allTargets, env.environmentTargetId]);
+  const access = useMemo(() => environmentAccessBadge(env.accessStatus || target?.accessStatus), [env.accessStatus, target?.accessStatus]);
+  const managed = useMemo(() => environmentManagedInstanceStatus(env, target, allInstances, jobs), [env, target, allInstances, jobs]);
   const effectiveActiveEnvironmentId = pendingActiveEnvironmentId || activeEnvironmentId;
   const isActive = env.id === effectiveActiveEnvironmentId;
   const isPending = env.id === pendingActiveEnvironmentId;
@@ -160,7 +147,7 @@ function EnvironmentCard({ env }: { env: any }) {
   }}>
     <span className={`status-corner ${isActive ? 'active' : ''}`} title={isActive ? 'Active environment' : 'Inactive environment'} aria-label={isActive ? 'Active environment' : 'Inactive environment'}>{isActive ? '✓' : ''}</span>
     <div className="card-top">
-      <div><h2>{env.name}</h2><p className="subtle">{env.syncFolder || 'workflows'}{env.projectName ? ` · ${env.projectName}` : ''}</p></div>
+      <div><h2>{env.name}</h2><p className="subtle">{env.workflowsPath || env.workflowDir || env.syncFolder || 'workflows'}{env.projectName ? ` · ${env.projectName}` : ''}</p></div>
       <div className="row">{isActive ? <span className="badge active">{isPending ? 'Activating' : 'Active'}</span> : null}{access ? <span className={`badge ${access.tone}`}>{access.label}</span> : null}</div>
     </div>
     <p className="subtle">{target?.name || env.environmentTargetName || env.url || 'No instance target'}</p>
@@ -174,7 +161,8 @@ function EnvironmentCard({ env }: { env: any }) {
 
 function ManagedInstancesTab() {
   const dispatch = useAppDispatch();
-  const managed = useSelector(instances).filter((instance) => instance.mode === 'managed-local-docker');
+  const allInstances = useSelector(instances);
+  const managed = useMemo(() => allInstances.filter((instance) => instance.mode === 'managed-local-docker'), [allInstances]);
   const activeSetup = useSelector(setupActive);
   return <section className="stack">
     <header>
@@ -188,15 +176,15 @@ function ManagedInstancesTab() {
 
 function ManagedInstanceCard({ instance }: { instance: any }) {
   const dispatch = useAppDispatch();
-  const jobs = useSelector((state: RootState) => state.jobs);
+  const job = useSelector((state: RootState) => state.jobs[instance.id]);
   const envs = useSelector(environments);
   const allTargets = useSelector(targets);
-  const status = managedInstanceUiStatus(instance, jobs[instance.id]);
-  const usedBy = envs.filter((env) => {
+  const status = useMemo(() => managedInstanceUiStatus(instance, job), [instance, job]);
+  const usedBy = useMemo(() => envs.filter((env) => {
     const target = allTargets.find((item) => item.id === env.environmentTargetId);
     return env.managedInstanceId === instance.id || target?.managedInstanceId === instance.id;
-  });
-  const url = instanceUrl(instance);
+  }), [envs, allTargets, instance.id]);
+  const url = useMemo(() => instanceUrl(instance), [instance]);
   const openDetail = () => dispatch(actions.modalOpened({ kind: 'managed-detail', instanceId: instance.id }));
   return <article className="card clickable" role="button" tabIndex={0} onClick={openDetail} onKeyDown={(event) => {
     if (event.key === 'Enter' || event.key === ' ' || event.key === 'Spacebar' || event.code === 'Space') {
@@ -216,8 +204,8 @@ function ManagedInstanceCard({ instance }: { instance: any }) {
 }
 
 function AgentProvidersTab() {
-  const providers = useSelector((state: RootState) => server(state).providers || []);
-  const sortedProviders = [...providers].sort((left: any, right: any) => Number(Boolean(right.connected)) - Number(Boolean(left.connected)) || String(left.label || left.provider || left.id).localeCompare(String(right.label || right.provider || right.id)));
+  const providers = useSelector((state: RootState) => server(state).providers || EMPTY_ARRAY);
+  const sortedProviders = useMemo(() => [...providers].sort((left: any, right: any) => Number(Boolean(right.connected)) - Number(Boolean(left.connected)) || String(left.label || left.provider || left.id).localeCompare(String(right.label || right.provider || right.id))), [providers]);
   return <section className="stack"><header><div><h1>Agent providers</h1><p className="muted">AI provider connections used by agent workflows.</p></div></header><div className="stack">{sortedProviders.map((provider: any) => {
     const providerId = provider.provider || provider.id;
     return <article className="card" key={providerId}><div className="card-top"><div><h2>{provider.label || providerId}</h2><p className="subtle">{provider.model || provider.reason || ''}</p></div><span className={`badge ${provider.connected ? 'ready' : ''}`}>{provider.connected ? 'Connected' : 'Not connected'}</span></div><div className="row">{provider.connected ? null : <button onClick={() => post({ type: 'connectProvider', provider: providerId })}>Connect</button>}{provider.connected ? <button className="secondary" onClick={() => post({ type: 'disconnectProvider', provider: providerId })}>Disconnect</button> : null}</div></article>;
@@ -243,43 +231,93 @@ function EnvironmentFormModal({ environmentId }: { environmentId?: string }) {
   const draftId = environmentId || 'new';
   const draft = useSelector((state: RootState) => state.drafts.environment[draftId]);
   const allTargets = useSelector(targets);
+  const allEnvironments = useSelector(environments);
   const allInstances = useSelector(instances);
-  const jobs = useSelector((state: RootState) => state.jobs);
   const activeSetup = useSelector(setupActive);
   const notice = useSelector((state: RootState) => state.ui.notice);
   const savePending = useSelector((state: RootState) => Boolean(state.ui.pendingEnvironmentSaves[draftId]));
-  const choices = buildEnvironmentInstanceChoices(allTargets, allInstances);
-  const selected = choices.find((choice) => choice.value === draft?.instanceChoice);
+  const choices = useMemo(() => buildEnvironmentInstanceChoices(allTargets, allInstances), [allTargets, allInstances]);
+  const selected = useMemo(() => choices.find((choice) => choice.value === draft?.instanceChoice), [choices, draft?.instanceChoice]);
+  const selectedInstanceId = selected?.instanceId;
+  const selectedJob = useSelector((state: RootState) => selectedInstanceId ? state.jobs[selectedInstanceId] : undefined);
   const editingEnvironment = Boolean(environmentId);
   const isManaged = selected?.mode === 'managed';
-  const status = isManaged ? managedInstanceUiStatus(allInstances.find((instance) => instance.id === selected.instanceId), selected.instanceId ? jobs[selected.instanceId] : undefined) : undefined;
+  const status = useMemo(() => isManaged ? managedInstanceUiStatus(allInstances.find((instance) => instance.id === selectedInstanceId), selectedJob) : undefined, [isManaged, allInstances, selectedInstanceId, selectedJob]);
   const patch = (patch: Partial<EnvironmentDraft>) => dispatch(actions.environmentDraftPatched({ id: draftId, patch }));
-  const syncFolderConflict = false;
+  const patchName = (name: string) => {
+    const currentDefault = defaultWorkflowsPathForName(draft?.name || '', allEnvironments, environmentId);
+    const nextPatch: Partial<EnvironmentDraft> = { name };
+    if (!editingEnvironment && draft?.workflowsPath === currentDefault) {
+      nextPatch.workflowsPath = defaultWorkflowsPathForName(name, allEnvironments, environmentId);
+    }
+    patch(nextPatch);
+  };
+  const normalizedWorkflowsPath = normalizeWorkflowsPath(draft?.workflowsPath || '');
+  const workflowsPathConflict = useMemo(() => Boolean(normalizedWorkflowsPath) && allEnvironments
+    .filter((environment) => environment?.id !== environmentId)
+    .some((environment) => normalizeWorkflowsPath(environment?.workflowsPath || environment?.workflowDir || environment?.syncFolder || '') === normalizedWorkflowsPath), [allEnvironments, environmentId, normalizedWorkflowsPath]);
   const canContinue = draft && selected && selected.mode !== 'new-managed' && (isManaged || selected?.targetId || selected?.mode !== 'new-connected' || (draft.url && (draft.apiKey || draft.apiKeyAvailable)));
   if (!draft) return null;
   const save = () => {
-    if (savePending || syncFolderConflict) return;
+    if (savePending || workflowsPathConflict) return;
     dispatch(actions.environmentSaveRequested(draftId));
     post({
-      type: 'saveEnvironment', environmentId, name: draft.name, environmentTargetId: selected?.targetId || draft.environmentTargetId || '', instanceId: selected?.instanceId || draft.instanceId || '', url: isManaged ? '' : draft.url || selected?.url || '', apiKey: isManaged ? '' : draft.apiKey, projectId: isManaged ? 'personal' : draft.projectId || 'personal', projectName: isManaged ? 'Personal' : draft.projectName || 'Personal', syncFolder: draft.syncFolder, folderSync: draft.folderSync, customNodesPath: draft.customNodesPath, description: draft.description,
+      type: 'saveEnvironment', environmentId, name: draft.name, environmentTargetId: selected?.targetId || draft.environmentTargetId || '', instanceId: selected?.instanceId || draft.instanceId || '', url: isManaged ? '' : draft.url || selected?.url || '', apiKey: isManaged ? '' : draft.apiKey, projectId: isManaged ? 'personal' : draft.projectId || 'personal', projectName: isManaged ? 'Personal' : draft.projectName || 'Personal', workflowsPath: draft.workflowsPath, folderSync: draft.folderSync, customNodesPath: draft.customNodesPath, description: draft.description,
+      nativeMcpEnabled: draft.nativeMcpEnabled,
+      nativeMcpUrl: draft.nativeMcpUrl,
+      nativeMcpToken: draft.nativeMcpToken,
+      nativeMcpAllowExecutionData: draft.nativeMcpAllowExecutionData,
+      nativeMcpAllowRemote: draft.nativeMcpAllowRemote,
+      nativeMcpTimeoutMs: draft.nativeMcpTimeoutMs,
+    });
+  };
+  const testNativeMcp = () => {
+    dispatch(actions.environmentDraftNativeMcpTestRequested({ id: draftId }));
+    post({
+      type: 'testNativeMcpConnection',
+      draftId,
+      environmentId,
+      environmentTargetId: selected?.targetId || draft.environmentTargetId || '',
+      instanceId: selected?.instanceId || draft.instanceId || '',
+      url: isManaged ? '' : draft.url || selected?.url || '',
+      nativeMcpUrl: draft.nativeMcpUrl,
+      nativeMcpToken: draft.nativeMcpToken,
+      nativeMcpTimeoutMs: draft.nativeMcpTimeoutMs,
     });
   };
   return <Modal title={environmentId ? 'Edit environment' : 'Add environment'} onClose={() => { dispatch(actions.environmentDraftClosed({ id: draftId })); dispatch(actions.modalClosed()); }}>
     {notice?.tone === 'error' ? <div className="inline-message error">{notice.message}</div> : null}
-    <div className="form-grid"><label>Name<input value={draft.name} onChange={(event) => patch({ name: event.target.value })} /></label><label>Instance<select value={draft.instanceChoice} disabled={editingEnvironment} onChange={(event) => { const value = event.target.value; const choice = choices.find((item) => item.value === value); if (choice?.mode === 'new-managed') { dispatch(actions.modalOpened({ kind: 'managed-form', returnToEnvironmentForm: true, returnToEnvironmentDraftId: draftId })); return; } patch({ instanceChoice: value, instanceId: choice?.instanceId, environmentTargetId: choice?.targetId, url: choice?.url || '', projectId: choice?.mode === 'managed' ? 'personal' : '', projectName: choice?.mode === 'managed' ? 'Personal' : '', projects: undefined, projectError: undefined, projectsLoading: false, projectRequestKey: undefined }); }}><optgroup label="Create">{choices.filter((choice) => choice.group === 'Create').map((choice) => <option key={choice.value} value={choice.value}>{choice.label}</option>)}</optgroup><optgroup label="Saved instances">{choices.filter((choice) => choice.group === 'Saved instances').map((choice) => <option key={choice.value} value={choice.value}>{choice.label}</option>)}</optgroup></select>{editingEnvironment ? <span className="subtle">Create a new environment to link a different instance.</span> : null}</label></div>
+    <div className="form-grid"><label>Name<input value={draft.name} onChange={(event) => patchName(event.target.value)} /></label><label>Instance<select value={draft.instanceChoice} onChange={(event) => { const value = event.target.value; const choice = choices.find((item) => item.value === value); if (choice?.mode === 'new-managed') { dispatch(actions.modalOpened({ kind: 'managed-form', returnToEnvironmentForm: true, returnToEnvironmentDraftId: draftId })); return; } patch({ instanceChoice: value, instanceId: choice?.instanceId, environmentTargetId: choice?.targetId, url: choice?.url || '', apiKeyAvailable: choice?.mode === 'new-connected' ? false : draft.apiKeyAvailable, projectId: choice?.mode === 'managed' ? 'personal' : '', projectName: choice?.mode === 'managed' ? 'Personal' : '', projects: undefined, projectError: undefined, projectsLoading: false, projectRequestKey: undefined }); }}><optgroup label="Create">{choices.filter((choice) => choice.group === 'Create').map((choice) => <option key={choice.value} value={choice.value}>{choice.label}</option>)}</optgroup><optgroup label="Saved instances">{choices.filter((choice) => choice.group === 'Saved instances').map((choice) => <option key={choice.value} value={choice.value}>{choice.label}</option>)}</optgroup></select></label></div>
     {selected?.mode === 'new-connected' ? <div className="form-grid"><label>n8n URL<input value={draft.url} onChange={(event) => patch({ url: event.target.value })} /></label><label>API key<input type="password" value={draft.apiKey} onChange={(event) => patch({ apiKey: event.target.value })} placeholder={draft.apiKeyAvailable ? 'Stored API key will be reused' : ''} /></label></div> : null}
     {selected?.mode === 'new-managed' ? <div className="inline-message">Select New managed instance to create a linkable local runtime first.</div> : null}
     {canContinue && isManaged ? <div className="inline-message warning">Managed instance is {status?.label.toLowerCase()}. You can finish this environment now; runtime status will update in the background.</div> : null}
     {canContinue && !isManaged ? <ProjectFields draft={draft} patch={patch} draftId={draftId} selected={selected} /> : null}
-    {canContinue ? <div className="form-grid"><label>Sync root folder<input value={draft.syncFolder} onChange={(event) => patch({ syncFolder: event.target.value })} /></label><label>Custom nodes path<input value={draft.customNodesPath} onChange={(event) => patch({ customNodesPath: event.target.value })} /></label></div> : null}
+    {canContinue ? <div className="form-grid"><label>Workflows path<input value={draft.workflowsPath} onChange={(event) => patch({ workflowsPath: event.target.value })} />{workflowsPathConflict ? <span className="inline-message error">Another environment already uses this workflows path.</span> : null}</label><label>Custom nodes path<input value={draft.customNodesPath} onChange={(event) => patch({ customNodesPath: event.target.value })} /></label></div> : null}
     {canContinue ? <label>Description<textarea value={draft.description} onChange={(event) => patch({ description: event.target.value })} /></label> : null}
-    <div className="toolbar"><button onClick={save} disabled={!draft.name || !canContinue || syncFolderConflict || savePending}>{savePending ? 'Saving...' : 'Save environment'}</button>{!isManaged ? <button className="secondary" disabled={activeSetup || editingEnvironment || savePending} onClick={() => dispatch(actions.modalOpened({ kind: 'managed-form', returnToEnvironmentForm: true, returnToEnvironmentDraftId: draftId }))}>Create local instance</button> : null}</div>
+    {canContinue ? <section className="panel stack">
+      <label className="row"><input type="checkbox" checked={draft.nativeMcpEnabled} onChange={(event) => patch({ nativeMcpEnabled: event.target.checked })} /> Native n8n MCP Assist <span className="badge">optional</span></label>
+      <p className="muted">Live assist for workflows, executions, credential metadata, native node definitions, and server-side validation. N8NAC remains the authoring and sync source of truth.</p>
+      {draft.nativeMcpEnabled ? <>
+        <div className="form-grid"><label>MCP endpoint<input value={draft.nativeMcpUrl} onChange={(event) => patch({ nativeMcpUrl: event.target.value })} placeholder="Defaults to the environment URL + /mcp-server/http" /></label><label>Token<input type="password" value={draft.nativeMcpToken} onChange={(event) => patch({ nativeMcpToken: event.target.value })} placeholder={draft.nativeMcpTokenAvailable ? 'Stored token will be reused' : 'Native MCP bearer token'} /></label></div>
+        <label>Timeout ms<input value={draft.nativeMcpTimeoutMs} onChange={(event) => patch({ nativeMcpTimeoutMs: event.target.value })} placeholder="30000" /></label>
+        <details className="stack">
+          <summary>Advanced security options</summary>
+          <p className="muted">Keep these disabled for normal VS Code usage. They are not required for n8n Cloud instances.</p>
+          <label className="row"><input type="checkbox" checked={draft.nativeMcpAllowExecutionData} onChange={(event) => patch({ nativeMcpAllowExecutionData: event.target.checked })} /> Allow reading execution input/output data</label>
+          <p className="muted">Lets the agent inspect full execution payloads when troubleshooting executions. Payloads may contain customer data, API responses, or other sensitive values.</p>
+          <label className="row"><input type="checkbox" checked={draft.nativeMcpAllowRemote} onChange={(event) => patch({ nativeMcpAllowRemote: event.target.checked })} /> Allow remote access to the local MCP bridge</label>
+          <p className="muted">Only needed if the n8n-as-code MCP bridge is deliberately exposed on a network interface instead of localhost. This does not need to be enabled just because your n8n instance is hosted in n8n Cloud.</p>
+        </details>
+        <div className="toolbar"><button className="secondary" type="button" disabled={draft.nativeMcpTestPending || (!draft.nativeMcpToken && !draft.nativeMcpTokenAvailable)} onClick={testNativeMcp}>{draft.nativeMcpTestPending ? 'Testing...' : 'Test connection'}</button>{draft.nativeMcpTestResult ? <span className={`inline-message ${draft.nativeMcpTestResult.ok ? '' : 'error'}`}>{draft.nativeMcpTestResult.message}</span> : null}</div>
+      </> : null}
+    </section> : null}
+    <div className="toolbar"><button onClick={save} disabled={!draft.name || !canContinue || workflowsPathConflict || savePending}>{savePending ? 'Saving...' : 'Save environment'}</button>{!isManaged ? <button className="secondary" disabled={activeSetup || savePending} onClick={() => dispatch(actions.modalOpened({ kind: 'managed-form', returnToEnvironmentForm: true, returnToEnvironmentDraftId: draftId }))}>Create local instance</button> : null}</div>
   </Modal>;
 }
 
 function ProjectFields({ draft, patch, draftId, selected }: { draft: EnvironmentDraft; patch: (patch: Partial<EnvironmentDraft>) => void; draftId: string; selected: any }) {
   const dispatch = useAppDispatch();
-  const requestKey = `${selected?.value || ''}|${selected?.targetId || ''}|${draft.url || selected?.url || ''}|${draft.apiKey ? 'key' : draft.apiKeyAvailable ? 'stored' : ''}`;
+  const requestKey = useMemo(() => `${selected?.value || ''}|${selected?.targetId || ''}|${draft.url || selected?.url || ''}|${draft.apiKey ? 'key' : draft.apiKeyAvailable ? 'stored' : ''}`, [draft.apiKey, draft.apiKeyAvailable, draft.url, selected?.targetId, selected?.url, selected?.value]);
   useEffect(() => {
     if (!selected || selected.mode === 'managed' || selected.mode === 'new-managed') return;
     if (draft.projectsLoading && draft.projectRequestKey === requestKey) return;
@@ -287,10 +325,10 @@ function ProjectFields({ draft, patch, draftId, selected }: { draft: Environment
     dispatch(actions.environmentDraftProjectsLoading({ id: draftId, requestKey }));
     post({ type: 'loadProjects', scope: 'environment', draftId, requestKey, instanceId: selected?.instanceId || '', environmentTargetId: selected?.targetId || '', host: selected?.targetId ? '' : draft.url || selected?.url || '', apiKey: selected?.targetId ? '' : draft.apiKey, projectId: draft.projectId, projectName: draft.projectName });
   }, [dispatch, draft.apiKey, draft.apiKeyAvailable, draft.projectError, draft.projectId, draft.projectName, draft.projectRequestKey, draft.projects, draft.projectsLoading, draft.url, draftId, requestKey, selected]);
+  const projects = draft.projects || EMPTY_ARRAY;
+  const selectableProjects = useMemo(() => projects.filter((project) => project.id !== 'personal' || projects.length > 1), [projects]);
   if (draft.projectsLoading) return <div className="inline-message">Checking project access...</div>;
   if (draft.projectError) return null;
-  const projects = draft.projects || [];
-  const selectableProjects = projects.filter((project) => project.id !== 'personal' || projects.length > 1);
   if (selectableProjects.length <= 1 && selectableProjects[0]?.id === 'personal') return null;
   if (!selectableProjects.length) return null;
   return <div className="form-grid"><label>Project<select value={draft.projectId} onChange={(event) => { const project = projects.find((item) => item.id === event.target.value); patch({ projectId: event.target.value, projectName: project?.name || '' }); }}>{selectableProjects.map((project) => <option key={project.id} value={project.id}>{project.displayName || project.name}</option>)}</select></label></div>;
@@ -309,11 +347,12 @@ function ManagedInstanceFormModal({ returnToEnvironmentForm, returnToEnvironment
 
 function ManagedInstanceDetailModal({ instanceId }: { instanceId: string }) {
   const dispatch = useAppDispatch();
-  const instance = useSelector(instances).find((item) => item.id === instanceId);
-  const jobs = useSelector((state: RootState) => state.jobs);
-  const status = managedInstanceUiStatus(instance, jobs[instanceId]);
+  const allInstances = useSelector(instances);
+  const instance = useMemo(() => allInstances.find((item) => item.id === instanceId), [allInstances, instanceId]);
+  const job = useSelector((state: RootState) => state.jobs[instanceId]);
+  const status = useMemo(() => managedInstanceUiStatus(instance, job), [instance, job]);
   const credentials = useSelector((state: RootState) => state.ui.credentials);
-  const url = instance ? instanceUrl(instance) : '';
+  const url = useMemo(() => instance ? instanceUrl(instance) : '', [instance]);
   return <Modal title={instance?.name || instanceId} onClose={() => dispatch(actions.modalClosed())}>
     <div className="row"><span className={`badge ${status.tone}`}>{status.label}</span><span className="subtle">{status.message}</span></div>
     <p className="subtle">{url || 'URL pending'}</p>
@@ -325,6 +364,30 @@ function ManagedInstanceDetailModal({ instanceId }: { instanceId: string }) {
 
 function Modal({ title, children, onClose }: { title: string; children: React.ReactNode; onClose: () => void }) {
   return <div className="modal-backdrop"><section className="modal-card" role="dialog" aria-modal="true" aria-label={title}><div className="modal-head"><h2>{title}</h2><button className="secondary" onClick={onClose}>Close</button></div>{children}</section></div>;
+}
+
+function defaultWorkflowsPathForName(name: string, existingEnvironments: any[], currentEnvironmentId?: string): string {
+  const slug = String(name || 'environment')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+    || 'environment';
+  const used = new Set(existingEnvironments
+    .filter((environment) => environment?.id !== currentEnvironmentId)
+    .map((environment) => normalizeWorkflowsPath(environment?.workflowsPath || environment?.workflowDir || environment?.syncFolder || ''))
+    .filter(Boolean));
+  let candidate = `workflows/${slug}`;
+  let counter = 2;
+  while (used.has(normalizeWorkflowsPath(candidate))) {
+    candidate = `workflows/${slug}-${counter}`;
+    counter += 1;
+  }
+  return candidate;
+}
+
+function normalizeWorkflowsPath(value: string): string {
+  return String(value || '').trim().replace(/\\/g, '/').replace(/\/+$/g, '').toLowerCase();
 }
 
 createRoot(document.getElementById('root')!).render(<Provider store={store}><App /></Provider>);

@@ -1,11 +1,34 @@
+import { buildN8nIframeAllowPolicy, getN8nIframePermissionOrigin, N8N_IFRAME_SANDBOX } from './n8n-iframe-policy.js';
+import { buildN8nExternalNavigationClientScript } from './n8n-iframe-parent-bridge.js';
+import { normalizeWorkflowWebviewEndpoints, type WorkflowWebviewEndpoints } from '../services/workflow-webview-context.js';
+
 export interface AgentWorkbenchHtmlInput {
     workflowId: string;
     workflowName: string;
+    workflowFilename?: string;
+    workflowFilePath?: string;
     workflowAttached?: boolean;
     workflowUrl?: string;
     workflowReloadUrl?: string;
+    workflowEndpoints?: WorkflowWebviewEndpoints;
+    workflowFormTestUrl?: string;
     providerModelLabel: string;
 }
+
+export function createAgentWorkbenchBuildStamp(date = new Date()): string {
+    const pad = (value: number) => String(value).padStart(2, '0');
+    return [
+        'awb',
+        date.getFullYear(),
+        pad(date.getMonth() + 1),
+        pad(date.getDate()),
+        pad(date.getHours()),
+        pad(date.getMinutes()),
+        pad(date.getSeconds()),
+    ].join('-');
+}
+
+export const AGENT_WORKBENCH_BUILD = createAgentWorkbenchBuildStamp();
 
 function escapeHtml(value: string): string {
     return value
@@ -33,22 +56,39 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
     const initialWorkflowLabel = hasWorkflow ? safeWorkflowName : 'No workflow context';
     const safeWorkflowUrl = escapeHtml(input.workflowUrl || '');
     const safeProviderModelLabel = escapeHtml(input.providerModelLabel);
+    const safeWorkbenchBuild = escapeHtml(createAgentWorkbenchBuildStamp());
     const workflowIdJs = JSON.stringify(input.workflowId);
+    const workflowNameJs = JSON.stringify(input.workflowName || input.workflowId || 'Current workflow');
+    const workflowFilenameJs = JSON.stringify(input.workflowFilename || '');
+    const workflowFilePathJs = JSON.stringify(input.workflowFilePath || '');
     const workflowUrlJs = JSON.stringify(input.workflowUrl || '');
     const workflowReloadUrlJs = JSON.stringify(input.workflowReloadUrl || input.workflowUrl || '');
+    const workflowEndpoints = {
+        ...normalizeWorkflowWebviewEndpoints(input.workflowFormTestUrl),
+        ...normalizeWorkflowWebviewEndpoints(input.workflowEndpoints),
+    };
+    const workflowEndpointsJs = JSON.stringify(workflowEndpoints);
+    const workflowFormTestUrlJs = JSON.stringify(workflowEndpoints.formTestUrl || '');
 
-    let iframePermissionOrigin = 'src';
-    try {
-        iframePermissionOrigin = input.workflowUrl ? new URL(input.workflowUrl).origin : 'src';
-    } catch {
-        // Fallback to iframe's own source origin behavior if URL parsing fails.
-    }
-    const iframeAllowPolicy = `clipboard-read ${iframePermissionOrigin}; clipboard-write ${iframePermissionOrigin}; geolocation ${iframePermissionOrigin}; microphone ${iframePermissionOrigin}; camera ${iframePermissionOrigin}`;
+    const iframePermissionOrigin = getN8nIframePermissionOrigin(input.workflowUrl);
+    const iframeAllowPolicy = buildN8nIframeAllowPolicy(input.workflowUrl);
+    const externalNavigationScript = buildN8nExternalNavigationClientScript({
+        panelKind: 'agent-workbench',
+        workflowIdExpression: 'workflowId',
+        workflowNameExpression: 'workflowName',
+        sessionIdExpression: 'state && state.activeSessionId',
+        iframeHrefExpression: 'frame && frame.src',
+        endpointsExpression: 'workflowEndpoints',
+    });
     const lucideIcon = (paths: string) => `<svg viewBox="0 0 24 24" aria-hidden="true">${paths}</svg>`;
     const newConversationIcon = lucideIcon('<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M12 7v6"/><path d="M9 10h6"/>');
     const historyIcon = lucideIcon('<path d="M3 12a9 9 0 1 0 9-9 9.8 9.8 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/>');
+    const trashIcon = lucideIcon('<path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/>');
     const compactIcon = lucideIcon('<path d="M6 12h12"/><path d="m8 4 4 4 4-4"/><path d="m8 20 4-4 4 4"/>');
     const checkpointIcon = lucideIcon('<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8"/><path d="M7 3v5h8"/>');
+    const rewindIcon = lucideIcon('<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>');
+    const copyIcon = lucideIcon('<rect width="12" height="12" x="8" y="8" rx="1.5"/><path d="M16 8V5.5A1.5 1.5 0 0 0 14.5 4h-9A1.5 1.5 0 0 0 4 5.5v9A1.5 1.5 0 0 0 5.5 16H8"/>');
+    const stopIcon = lucideIcon('<rect width="10" height="10" x="7" y="7" rx="1.5"/>');
     const sendIcon = lucideIcon('<path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/>');
     const readOpIcon = lucideIcon('<path d="M12 7v10"/><path d="M17 12H7"/>');
     const writeOpIcon = lucideIcon('<path d="M12 5v14"/><path d="m19 12-7 7-7-7"/>');
@@ -58,6 +98,7 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
     const agentOpIcon = lucideIcon('<path d="M12 3 4 7v5c0 5 3.4 9.4 8 10 4.6-.6 8-5 8-10V7l-8-4Z"/><path d="M9.5 12.5 11 14l3.5-3.5"/>');
     const phaseOpIcon = lucideIcon('<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/>');
     const thinkingOpIcon = lucideIcon('<path d="M9.5 9a3 3 0 1 1 5 2.2c-.8.7-1.5 1.2-1.5 2.3"/><path d="M12 17h.01"/><path d="M7 4.8A9 9 0 1 0 17 4.8"/>');
+    const todoOpIcon = lucideIcon('<path d="M9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>');
     const statusRunningIcon = lucideIcon('<path d="M21 12a9 9 0 1 1-6.22-8.56"/><path d="M21 3v6h-6"/>');
     const statusDoneIcon = lucideIcon('<path d="M20 6 9 17l-5-5"/>');
     const statusErrorIcon = lucideIcon('<path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"/><path d="M12 9v4"/><path d="M12 17h.01"/>');
@@ -98,11 +139,15 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
         button, input, select, textarea { font: inherit; }
         .workbench {
             display: grid;
-            grid-template-columns: ${hasWorkflow ? 'minmax(360px, .95fr) minmax(420px, 1.05fr)' : 'minmax(420px, 1fr)'};
+            grid-template-columns: ${hasWorkflow ? 'minmax(360px, var(--agent-chat-width, .95fr)) 7px minmax(420px, 1fr)' : 'minmax(420px, 1fr)'};
             height: 100vh;
             width: 100vw;
             min-width: 0;
             min-height: 0;
+        }
+        .workbench.resizing {
+            cursor: col-resize;
+            user-select: none;
         }
         .chat {
             min-width: 0;
@@ -119,6 +164,40 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             min-width: 0;
             min-height: 0;
             background: var(--bg);
+        }
+        .split-resizer {
+            position: relative;
+            z-index: 3;
+            min-width: 7px;
+            min-height: 0;
+            cursor: col-resize;
+            background: var(--panel);
+            border-left: 1px solid var(--border);
+            border-right: 1px solid var(--border);
+            touch-action: none;
+        }
+        .split-resizer::before {
+            content: "";
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 3px;
+            height: 44px;
+            border-radius: 999px;
+            transform: translate(-50%, -50%);
+            background: color-mix(in srgb, var(--muted) 55%, transparent);
+        }
+        .split-resizer:hover::before,
+        .split-resizer:focus-visible::before,
+        .workbench.resizing .split-resizer::before {
+            background: var(--accent);
+        }
+        .split-resizer:focus-visible {
+            outline: 1px solid var(--vscode-focusBorder, var(--accent));
+            outline-offset: -1px;
+        }
+        .workbench.resizing .workflow iframe {
+            pointer-events: none;
         }
         .chat-head {
             padding: 12px 14px;
@@ -171,12 +250,28 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             background: color-mix(in srgb, var(--bg) 82%, transparent);
             padding: 10px;
             display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            align-items: flex-start;
             gap: 6px;
-            cursor: pointer;
         }
         .session-item.active {
             border-color: color-mix(in srgb, var(--accent) 58%, var(--border));
             box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 42%, transparent);
+        }
+        button.session-select {
+            display: grid;
+            min-width: 0;
+            gap: 6px;
+            padding: 0;
+            border: 0;
+            border-radius: 6px;
+            background: transparent;
+            color: var(--text);
+            text-align: left;
+        }
+        button.session-select:focus-visible {
+            outline: 1px solid var(--vscode-focusBorder, var(--accent));
+            outline-offset: 2px;
         }
         .session-item-head {
             display: flex;
@@ -195,6 +290,30 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             gap: 6px;
             flex-wrap: wrap;
             justify-content: flex-end;
+            align-items: center;
+            flex: 0 0 auto;
+        }
+        .session-delete {
+            width: 26px;
+            height: 26px;
+            min-width: 26px;
+            padding: 0;
+            border-radius: 6px;
+            color: var(--muted);
+        }
+        .session-delete:hover:not(:disabled) {
+            color: var(--error);
+            border-color: color-mix(in srgb, var(--error) 58%, var(--border));
+            background: color-mix(in srgb, var(--error) 12%, transparent);
+        }
+        .session-delete svg {
+            width: 14px;
+            height: 14px;
+            stroke: currentColor;
+            fill: none;
+            stroke-width: 1.8;
+            stroke-linecap: round;
+            stroke-linejoin: round;
         }
         .badge {
             border: 1px solid var(--border);
@@ -350,6 +469,14 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             text-overflow: ellipsis;
             white-space: nowrap;
         }
+        .workbench-build {
+            color: var(--muted);
+            font-size: 10px;
+            line-height: 1;
+            opacity: .72;
+            flex: 0 0 auto;
+            user-select: text;
+        }
         .context-actions {
             display: flex;
             gap: 8px;
@@ -466,10 +593,54 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             font-size: 13px;
             overflow-wrap: anywhere;
         }
-        .entry.user { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); }
+        .entry.user {
+            border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+        }
         .entry.system { color: var(--muted); }
         .entry.assistant.streaming { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent); }
         .entry.operation, .entry.compaction, .entry.context { background: color-mix(in srgb, var(--elevated) 90%, transparent); }
+        .entry-body {
+            white-space: pre-wrap;
+        }
+        .message-group {
+            display: grid;
+            gap: 6px;
+        }
+        .message-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 14px;
+            padding-right: 1px;
+        }
+        .message-action {
+            display: inline-grid;
+            place-items: center;
+            width: 18px;
+            height: 18px;
+            border: 0;
+            border-radius: 4px;
+            background: transparent;
+            color: var(--muted);
+            cursor: pointer;
+            padding: 0;
+        }
+        .message-action:hover:not(:disabled) {
+            color: var(--text);
+            background: color-mix(in srgb, var(--elevated) 70%, transparent);
+        }
+        .message-action:disabled {
+            opacity: 0.55;
+            cursor: default;
+        }
+        .message-action svg {
+            width: 14px;
+            height: 14px;
+            stroke: currentColor;
+            fill: none;
+            stroke-width: 1.7;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+        }
         .entry-head {
             display: flex;
             justify-content: space-between;
@@ -555,6 +726,87 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             font-family: var(--vscode-editor-font-family, var(--vscode-font-family, monospace));
             font-size: 12px;
         }
+        .operation-compact {
+            display: grid;
+            gap: 6px;
+            margin-top: 2px;
+        }
+        .operation-row {
+            display: grid;
+            grid-template-columns: 68px minmax(0, 1fr);
+            gap: 8px;
+            align-items: baseline;
+            min-width: 0;
+            font-size: 12px;
+        }
+        .operation-label {
+            color: var(--muted);
+            font-size: 11px;
+            text-transform: uppercase;
+        }
+        .operation-value {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .operation-code {
+            font-family: var(--vscode-editor-font-family, var(--vscode-font-family, monospace));
+        }
+        .todo-list {
+            display: grid;
+            gap: 4px;
+        }
+        .todo-checklist {
+            display: grid;
+            gap: 5px;
+            margin-top: 4px;
+        }
+        .todo-item {
+            display: grid;
+            grid-template-columns: 16px minmax(0, 1fr);
+            gap: 7px;
+            align-items: start;
+            color: var(--text);
+            font-size: 12px;
+        }
+        .todo-box {
+            display: inline-grid;
+            place-items: center;
+            width: 13px;
+            height: 13px;
+            margin-top: 2px;
+            border: 1px solid color-mix(in srgb, var(--muted) 72%, transparent);
+            border-radius: 3px;
+            color: var(--accent-text);
+            background: transparent;
+            font-size: 10px;
+            line-height: 1;
+        }
+        .todo-item.completed .todo-box {
+            border-color: var(--success);
+            background: color-mix(in srgb, var(--success) 72%, transparent);
+        }
+        .todo-item.in-progress .todo-box {
+            border-color: var(--warning);
+            background: color-mix(in srgb, var(--warning) 18%, transparent);
+        }
+        .todo-text {
+            min-width: 0;
+            overflow-wrap: anywhere;
+        }
+        .todo-item.completed .todo-text {
+            color: var(--muted);
+            text-decoration: line-through;
+        }
+        .todo-line {
+            display: grid;
+            grid-template-columns: 86px minmax(0, 1fr);
+            gap: 8px;
+        }
+        .todo-status {
+            color: var(--muted);
+            text-transform: capitalize;
+        }
         .composer {
             display: grid;
             gap: 6px;
@@ -575,6 +827,54 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             gap: 8px;
             align-items: center;
             flex-wrap: wrap;
+        }
+        .pending-prompt {
+            display: none;
+            grid-template-columns: minmax(0, 1fr) auto;
+            gap: 8px;
+            align-items: center;
+            padding: 6px 7px 6px 9px;
+            border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--border));
+            border-radius: 7px;
+            background: color-mix(in srgb, var(--accent) 14%, transparent);
+            color: var(--text);
+            font-size: 12px;
+        }
+        .pending-prompt.open { display: grid; }
+        .runtime-finalizing {
+            display: none;
+            color: var(--muted);
+            font-size: 11px;
+            line-height: 1.25;
+            padding: 0 2px;
+        }
+        .runtime-finalizing.open {
+            display: block;
+        }
+        .pending-prompt-main {
+            display: flex;
+            gap: 7px;
+            align-items: center;
+            min-width: 0;
+        }
+        .pending-prompt-label {
+            flex: 0 0 auto;
+            color: var(--muted);
+            text-transform: uppercase;
+            font-size: 10px;
+            letter-spacing: 0;
+        }
+        .pending-prompt-text {
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .pending-prompt button {
+            min-height: 24px;
+            padding: 3px 8px;
+            border-radius: 6px;
+            font-size: 11px;
         }
         .composer-toolbar {
             display: flex;
@@ -619,6 +919,60 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             top: calc(100% + 8px);
             bottom: auto;
             width: min(340px, calc(100vw - 28px));
+        }
+        .inline-popover.worktree {
+            left: auto;
+            right: 0;
+            width: min(340px, calc(100vw - 28px));
+        }
+        .inline-option.worktree-item {
+            grid-template-columns: 1fr auto auto auto;
+        }
+        .inline-option.worktree-item .branch-name {
+            color: var(--muted);
+            font-family: var(--vscode-editor-font-family, monospace);
+            font-size: 10px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .worktree-delete {
+            width: 22px;
+            height: 22px;
+            min-width: 22px;
+            padding: 0;
+            border-radius: 4px;
+            color: var(--muted);
+            display: inline-grid;
+            place-items: center;
+        }
+        .worktree-delete:hover {
+            color: var(--error);
+            background: color-mix(in srgb, var(--error) 12%, transparent);
+        }
+        .worktree-delete svg {
+            width: 12px;
+            height: 12px;
+        }
+        #select-worktree {
+            max-width: 120px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        #select-worktree.worktree-active {
+            color: var(--accent-text);
+            background: var(--accent);
+        }
+        .worktree-warning {
+            display: none;
+            padding: 4px 14px 6px;
+            color: var(--warning);
+            font-size: 12px;
+            line-height: 1.4;
+        }
+        .worktree-warning.active {
+            display: block;
         }
         .inline-popover-head {
             display: flex;
@@ -852,7 +1206,8 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             padding: 4px 8px;
             border-radius: 6px;
         }
-        .send-button {
+        .send-button,
+        .stop-button.active {
             display: inline-grid;
             place-items: center;
             width: 32px;
@@ -863,7 +1218,8 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             line-height: 1;
             box-shadow: 0 1px 0 color-mix(in srgb, white 18%, transparent) inset;
         }
-        .send-button svg {
+        .send-button svg,
+        .stop-button svg {
             width: 15px;
             height: 15px;
             stroke: currentColor;
@@ -876,7 +1232,10 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             display: none;
         }
         .stop-button.active {
-            display: inline-block;
+            color: var(--error);
+            background: transparent;
+            border: 1px solid color-mix(in srgb, var(--error) 55%, var(--border));
+            box-shadow: none;
         }
         button:disabled {
             cursor: not-allowed;
@@ -928,6 +1287,9 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
                 grid-template-columns: 1fr;
                 grid-template-rows: ${hasWorkflow ? 'minmax(360px, 48%) 1fr' : '1fr'};
             }
+            .split-resizer {
+                display: none;
+            }
             .chat {
                 border-right: 0;
             }
@@ -940,6 +1302,9 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             .workbench {
                 grid-template-columns: 1fr;
                 grid-template-rows: auto ${hasWorkflow ? 'minmax(280px, 42%)' : ''};
+            }
+            .split-resizer {
+                display: none;
             }
             .chat {
                 border-right: 0;
@@ -958,6 +1323,7 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
                         <div class="chat-title-row">
                             <div class="chat-title">Workflow Architect</div>
                             <div id="conversation-title" class="conversation-title"></div>
+                            <div class="workbench-build" title="Agent Workbench build">${safeWorkbenchBuild}</div>
                         </div>
                         <div class="context-actions">
                             <div id="context-pill" class="context-pill" title="Context usage">
@@ -982,29 +1348,35 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             <form id="composer" class="composer">
                 <div class="composer-input">
                     <div id="context-badges" class="context-badges"></div>
+                    <div id="pending-prompt" class="pending-prompt" aria-live="polite"></div>
+                    <div id="runtime-finalizing" class="runtime-finalizing" aria-live="polite">Finalizing context before the next run...</div>
                     <div id="mention-menu" class="mention-menu"></div>
                     <textarea id="prompt" placeholder="Ask the n8n agent what to do with this workflow..." rows="2"></textarea>
                     <div class="composer-toolbar">
                         <div class="composer-provider">
                             <button id="select-model" class="secondary small" type="button" title="${safeProviderModelLabel}">${safeProviderModelLabel}</button>
                             <button id="select-reasoning" class="secondary small" type="button">Reasoning</button>
+                            <button id="select-worktree" class="secondary small" type="button" title="Worktree">Workspace</button>
                             <div id="provider-menu" class="inline-popover" role="menu"></div>
                             <div id="reasoning-menu" class="inline-popover reasoning" role="menu"></div>
+                            <div id="worktree-menu" class="inline-popover worktree" role="menu"></div>
                         </div>
                         <div class="composer-actions">
-                            <button id="stop" class="ghost stop-button" type="button" disabled>Stop</button>
+                            <button id="stop" class="ghost stop-button" type="button" title="Stop" aria-label="Stop" disabled>${stopIcon}</button>
                             <button id="send" class="send-button" type="submit" title="Send" aria-label="Send">${sendIcon}</button>
                         </div>
                     </div>
                 </div>
             </form>
+            <div id="worktree-warning" class="worktree-warning" aria-live="polite">Isolated worktree — n8n-as-code config changes and local workflow list from extension UI don't apply here.</div>
         </section>
-        ${hasWorkflow ? `<section class="workflow" aria-label="n8n workflow">
+        ${hasWorkflow ? `<div id="split-resizer" class="split-resizer" role="separator" aria-label="Resize chat and workflow panels" aria-orientation="vertical" aria-valuemin="360" aria-valuemax="1200" aria-valuenow="0" tabindex="0"></div>
+        <section class="workflow" aria-label="n8n workflow">
             <div id="refresh-pill" class="refresh-pill">Refreshing n8n...</div>
             ${hasWorkflowUi ? `<iframe
                 id="workflow-frame"
                 src="${safeWorkflowUrl}"
-                sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads allow-top-navigation allow-top-navigation-by-user-activation"
+                sandbox="${N8N_IFRAME_SANDBOX}"
                 allow="${iframeAllowPolicy}">
             </iframe>` : `<div class="empty-workflow"><div><strong>Workflow UI unavailable</strong><br>Push this workflow to n8n to preview and interact with its UI here.</div></div>`}
         </section>` : ''}
@@ -1048,16 +1420,28 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
     <script nonce="${nonce}">
         const vscode = acquireVsCodeApi();
         let workflowId = ${workflowIdJs};
+        let workflowName = ${workflowNameJs};
+        let workflowFilename = ${workflowFilenameJs};
+        let workflowFilePath = ${workflowFilePathJs};
         let workflowUrl = ${workflowUrlJs};
         let workflowReloadUrl = ${workflowReloadUrlJs};
+        let workflowEndpoints = ${workflowEndpointsJs};
+        let workflowFormTestUrl = ${workflowFormTestUrlJs};
+        let lastWorkflowFormTestOpenUrl = '';
+        let lastWorkflowFormTestOpenAt = 0;
+        let openWorkflowContext = workflowId || workflowFilename || workflowFilePath
+            ? { id: workflowId || undefined, name: workflowName, filename: workflowFilename || undefined, filePath: workflowFilePath || undefined }
+            : null;
         let iframeOrigin = ${JSON.stringify(iframePermissionOrigin)};
         const PASTE_RATE_LIMIT_MS = 1000;
         const GRANT_TTL_MS = 5000;
+        const FORM_TEST_OPEN_COOLDOWN_MS = 1500;
         let lastPasteMs = 0;
         const pendingGrants = new Map();
         let isRunning = false;
         let currentWorkflowContext = null;
         let currentNodeContexts = [];
+        let availableWorkflowCache = [];
         let activeFilter = 'current';
         let state = null;
         let providerModelCache = {};
@@ -1067,7 +1451,20 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
         let modelSearchQuery = '';
         let reasoningMenuOpen = false;
         let newSessionMenuOpen = false;
+        let worktreeMenuOpen = false;
+        let activeWorktreePath = null;
         let autoScrollFeed = true;
+        let pendingPrompt = null;
+        let runtimeFinalizing = false;
+        let lastStateSequence = 0;
+        const rewoundMessageIds = new Set();
+        const expandedDetailKeys = new Set();
+        const SPLIT_RESIZER_STORAGE_KEY = 'n8n.agentWorkbench.chatSplitRatio';
+        const DEFAULT_CHAT_SPLIT_RATIO = 0.475;
+        const MIN_CHAT_PANEL_WIDTH = 360;
+        const MIN_WORKFLOW_PANEL_WIDTH = 420;
+        let currentChatSplitRatio = DEFAULT_CHAT_SPLIT_RATIO;
+        let activeSplitResize = false;
 
         const OP_ICONS = {
             'file-read': ${JSON.stringify(readOpIcon)},
@@ -1077,7 +1474,8 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             tool: ${JSON.stringify(toolOpIcon)},
             agent: ${JSON.stringify(agentOpIcon)},
             phase: ${JSON.stringify(phaseOpIcon)},
-            thinking: ${JSON.stringify(thinkingOpIcon)}
+            thinking: ${JSON.stringify(thinkingOpIcon)},
+            todo: ${JSON.stringify(todoOpIcon)}
         };
 
         const STATUS_ICONS = {
@@ -1089,12 +1487,19 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
         const feed = document.getElementById('feed');
         const form = document.getElementById('composer');
         const promptInput = document.getElementById('prompt');
+        const pendingPromptEl = document.getElementById('pending-prompt');
+        const runtimeFinalizingEl = document.getElementById('runtime-finalizing');
+        const worktreeWarningEl = document.getElementById('worktree-warning');
         const sendButton = document.getElementById('send');
         const stopButton = document.getElementById('stop');
         const selectModelButton = document.getElementById('select-model');
         const selectReasoningButton = document.getElementById('select-reasoning');
         const providerMenu = document.getElementById('provider-menu');
         const reasoningMenu = document.getElementById('reasoning-menu');
+        const selectWorktreeButton = document.getElementById('select-worktree');
+        const worktreeMenu = document.getElementById('worktree-menu');
+        const workbench = document.getElementById('workbench');
+        const splitResizer = document.getElementById('split-resizer');
         const frame = document.getElementById('workflow-frame');
         const refreshPill = document.getElementById('refresh-pill');
         const contextBadges = document.getElementById('context-badges');
@@ -1123,6 +1528,108 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             if (element) element.addEventListener(eventName, handler);
         }
 
+        function clamp(value, min, max) {
+            return Math.min(Math.max(value, min), max);
+        }
+
+        function getSplitMetrics() {
+            if (!workbench || !splitResizer) return null;
+            const resizerStyle = window.getComputedStyle(splitResizer);
+            if (resizerStyle.display === 'none') return null;
+            const rect = workbench.getBoundingClientRect();
+            const resizerWidth = splitResizer.offsetWidth || 7;
+            const availableWidth = Math.max(0, rect.width - resizerWidth);
+            const maxChatWidth = Math.max(MIN_CHAT_PANEL_WIDTH, availableWidth - MIN_WORKFLOW_PANEL_WIDTH);
+            const minRatio = availableWidth > 0 ? MIN_CHAT_PANEL_WIDTH / availableWidth : DEFAULT_CHAT_SPLIT_RATIO;
+            const maxRatio = availableWidth > 0 ? maxChatWidth / availableWidth : DEFAULT_CHAT_SPLIT_RATIO;
+            return { rect, availableWidth, maxChatWidth, minRatio, maxRatio };
+        }
+
+        function readStoredChatSplitRatio() {
+            try {
+                const raw = localStorage.getItem(SPLIT_RESIZER_STORAGE_KEY);
+                if (!raw) return DEFAULT_CHAT_SPLIT_RATIO;
+                const parsed = Number(raw);
+                return Number.isFinite(parsed) ? parsed : DEFAULT_CHAT_SPLIT_RATIO;
+            } catch (e) {
+                return DEFAULT_CHAT_SPLIT_RATIO;
+            }
+        }
+
+        function persistChatSplitRatio(ratio) {
+            try {
+                localStorage.setItem(SPLIT_RESIZER_STORAGE_KEY, String(ratio));
+            } catch (e) {}
+        }
+
+        function applyChatSplitRatio(ratio, persist) {
+            const metrics = getSplitMetrics();
+            if (!metrics || !metrics.availableWidth) return;
+            const boundedRatio = clamp(ratio, metrics.minRatio, metrics.maxRatio);
+            const chatWidth = Math.round(metrics.availableWidth * boundedRatio);
+            currentChatSplitRatio = boundedRatio;
+            workbench.style.setProperty('--agent-chat-width', chatWidth + 'px');
+            splitResizer.setAttribute('aria-valuemin', String(MIN_CHAT_PANEL_WIDTH));
+            splitResizer.setAttribute('aria-valuemax', String(Math.round(metrics.maxChatWidth)));
+            splitResizer.setAttribute('aria-valuenow', String(chatWidth));
+            if (persist) persistChatSplitRatio(boundedRatio);
+        }
+
+        function setChatSplitFromClientX(clientX, persist) {
+            const metrics = getSplitMetrics();
+            if (!metrics || !metrics.availableWidth) return;
+            const chatWidth = clamp(clientX - metrics.rect.left, MIN_CHAT_PANEL_WIDTH, metrics.maxChatWidth);
+            applyChatSplitRatio(chatWidth / metrics.availableWidth, persist);
+        }
+
+        function setSplitResizing(active) {
+            activeSplitResize = active;
+            if (workbench) workbench.classList.toggle('resizing', active);
+        }
+
+        function initializeSplitResizer() {
+            if (!splitResizer || !workbench) return;
+            currentChatSplitRatio = readStoredChatSplitRatio();
+            applyChatSplitRatio(currentChatSplitRatio, false);
+
+            splitResizer.addEventListener('pointerdown', (event) => {
+                event.preventDefault();
+                splitResizer.setPointerCapture?.(event.pointerId);
+                setSplitResizing(true);
+                setChatSplitFromClientX(event.clientX, true);
+            });
+            splitResizer.addEventListener('pointermove', (event) => {
+                if (!activeSplitResize) return;
+                setChatSplitFromClientX(event.clientX, true);
+            });
+            splitResizer.addEventListener('pointerup', (event) => {
+                splitResizer.releasePointerCapture?.(event.pointerId);
+                setSplitResizing(false);
+            });
+            splitResizer.addEventListener('pointercancel', (event) => {
+                splitResizer.releasePointerCapture?.(event.pointerId);
+                setSplitResizing(false);
+            });
+            splitResizer.addEventListener('keydown', (event) => {
+                const metrics = getSplitMetrics();
+                if (!metrics) return;
+                if (event.key === 'ArrowLeft') {
+                    event.preventDefault();
+                    applyChatSplitRatio(currentChatSplitRatio - 0.03, true);
+                } else if (event.key === 'ArrowRight') {
+                    event.preventDefault();
+                    applyChatSplitRatio(currentChatSplitRatio + 0.03, true);
+                } else if (event.key === 'Home') {
+                    event.preventDefault();
+                    applyChatSplitRatio(metrics.minRatio, true);
+                } else if (event.key === 'End') {
+                    event.preventDefault();
+                    applyChatSplitRatio(metrics.maxRatio, true);
+                }
+            });
+            window.addEventListener('resize', () => applyChatSplitRatio(currentChatSplitRatio, false));
+        }
+
         function isFeedNearBottom() {
             if (!feed) return true;
             return feed.scrollHeight - feed.scrollTop - feed.clientHeight <= 48;
@@ -1130,16 +1637,44 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
 
         function setRunning(running) {
             isRunning = running;
-            sendButton.disabled = running;
+            sendButton.disabled = false;
             stopButton.disabled = !running;
             stopButton.classList.toggle('active', running);
-            newSessionButton.disabled = running;
-            newSessionHeaderButton.disabled = running;
             checkpointOpenButton.disabled = running;
             checkpointSaveButton.disabled = running;
             compactContextButton.disabled = running;
             if (runIndicator) runIndicator.classList.toggle('active', running);
+            renderRuntimeFinalizing();
             renderCheckpoints();
+            renderFeed();
+        }
+
+        function renderPendingPrompt() {
+            if (!pendingPromptEl) return;
+            if (!pendingPrompt) {
+                pendingPromptEl.classList.remove('open');
+                pendingPromptEl.innerHTML = '';
+                return;
+            }
+            pendingPromptEl.classList.add('open');
+            pendingPromptEl.innerHTML =
+                '<div class="pending-prompt-main">' +
+                    '<span class="pending-prompt-label">' + (pendingPrompt.mode === 'steering' ? 'Steering' : 'Pending') + '</span>' +
+                    '<span class="pending-prompt-text" title="' + escapeHtml(pendingPrompt.text) + '">' + escapeHtml(pendingPrompt.text) + '</span>' +
+                '</div>' +
+                '<button id="pending-steer" class="secondary small" type="button"' + (pendingPrompt.mode === 'steering' ? ' disabled' : '') + '>Steer</button>';
+            const steerButton = document.getElementById('pending-steer');
+            on(steerButton, 'click', () => {
+                if (!pendingPrompt || !state) return;
+                pendingPrompt = { ...pendingPrompt, mode: 'steering' };
+                renderPendingPrompt();
+                vscode.postMessage({ type: 'agent.steer', text: pendingPrompt.text, workflowId, nodeContexts: currentNodeContexts, sessionId: state.activeSessionId });
+            });
+        }
+
+        function renderRuntimeFinalizing() {
+            if (!runtimeFinalizingEl) return;
+            runtimeFinalizingEl.classList.toggle('open', Boolean(runtimeFinalizing));
         }
 
         function escapeText(value) {
@@ -1229,8 +1764,19 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
 
         function isWorkflowFrameEvent(event) {
             if (!frame || event.source !== frame.contentWindow) return false;
-            return event.origin === iframeOrigin || event.origin === 'null';
+            return event.origin === iframeOrigin;
         }
+
+        function claimWorkflowFormTestOpen(url) {
+            if (!url) return false;
+            const now = Date.now();
+            if (lastWorkflowFormTestOpenUrl === url && now - lastWorkflowFormTestOpenAt < FORM_TEST_OPEN_COOLDOWN_MS) return false;
+            lastWorkflowFormTestOpenUrl = url;
+            lastWorkflowFormTestOpenAt = now;
+            return true;
+        }
+
+        ${externalNavigationScript}
 
         function reloadWorkflowFrame() {
             if (!frame || !refreshPill) return;
@@ -1295,13 +1841,17 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             }
 
             for (const session of sessions) {
-                const item = document.createElement('button');
-                item.type = 'button';
+                const item = document.createElement('div');
                 item.className = 'session-item' + (session.isActive ? ' active' : '');
-                item.addEventListener('click', () => {
+                const selectButton = document.createElement('button');
+                selectButton.type = 'button';
+                selectButton.className = 'session-select';
+                selectButton.setAttribute('aria-label', 'Open conversation ' + session.title);
+                const selectSession = () => {
                     closeHistory();
                     vscode.postMessage({ type: 'agent.session.select', sessionId: session.id });
-                });
+                };
+                selectButton.addEventListener('click', selectSession);
 
                 const head = document.createElement('div');
                 head.className = 'session-item-head';
@@ -1313,7 +1863,21 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
                 badges.className = 'session-item-badges';
                 if (session.isActive) badges.appendChild(badge('Active', 'active'));
                 if (session.checkpointCount) badges.appendChild(badge(session.checkpointCount + ' cp', 'success'));
-                head.append(title, badges);
+                const deleteButton = document.createElement('button');
+                deleteButton.type = 'button';
+                deleteButton.className = 'ghost session-delete';
+                deleteButton.title = 'Delete conversation';
+                deleteButton.setAttribute('aria-label', 'Delete conversation ' + session.title);
+                deleteButton.innerHTML = ${JSON.stringify(trashIcon)};
+                deleteButton.disabled = Boolean(session.isRunning);
+                deleteButton.addEventListener('click', (event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    if (deleteButton.disabled) return;
+                    vscode.postMessage({ type: 'agent.session.delete', sessionId: session.id });
+                });
+                badges.appendChild(deleteButton);
+                head.appendChild(title);
 
                 const foot = document.createElement('div');
                 foot.className = 'session-item-foot';
@@ -1323,7 +1887,8 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
                 updated.textContent = formatDate(session.updatedAt);
                 foot.append(attachment, updated);
 
-                item.append(head, foot);
+                selectButton.append(head, foot);
+                item.append(selectButton, badges);
                 sessionList.appendChild(item);
             }
         }
@@ -1424,9 +1989,107 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             providerMenuOpen = false;
             reasoningMenuOpen = false;
             newSessionMenuOpen = false;
+            worktreeMenuOpen = false;
             if (providerMenu) providerMenu.classList.remove('open');
             if (reasoningMenu) reasoningMenu.classList.remove('open');
             if (newSessionMenu) newSessionMenu.classList.remove('open');
+            if (worktreeMenu) worktreeMenu.classList.remove('open');
+        }
+
+        function renderWorktreeMenu() {
+            if (!worktreeMenu || !state) return;
+            worktreeMenu.innerHTML = '';
+
+            const head = document.createElement('div');
+            head.className = 'inline-popover-head';
+            head.innerHTML = '<strong>Workspace</strong><span>Choose where the agent works</span>';
+            worktreeMenu.appendChild(head);
+
+            const list = document.createElement('div');
+            list.className = 'inline-popover-list';
+
+            const currentOption = inlineOption('Current workspace', 'Work in this VS Code workspace directly', state.activeWorktree ? '' : 'Active', '');
+            currentOption.addEventListener('click', () => {
+                closeInlineMenus();
+                vscode.postMessage({ type: 'agent.worktree.clear' });
+            });
+            list.appendChild(currentOption);
+
+            const divider = document.createElement('div');
+            divider.className = 'inline-divider';
+            list.appendChild(divider);
+
+            const createOption = inlineOption('+ Create new worktree', 'Isolated branch for agent changes', '', '');
+            createOption.addEventListener('click', () => {
+                closeInlineMenus();
+                vscode.postMessage({ type: 'agent.worktree.create' });
+            });
+            list.appendChild(createOption);
+
+            const worktrees = Array.isArray(state.availableWorktrees) ? state.availableWorktrees : [];
+            const activePath = state.activeWorktree ? state.activeWorktree.path : activeWorktreePath;
+            for (const wt of worktrees) {
+                const branchDisplay = wt.branch ? wt.branch.replace('refs/heads/', '') : (wt.detached ? '(detached)' : '');
+                const isActive = activePath === wt.path;
+
+                const wrapper = document.createElement('div');
+                wrapper.style.display = 'contents';
+
+                const option = document.createElement('button');
+                option.type = 'button';
+                option.className = 'inline-option worktree-item' + (isActive ? ' active' : '');
+                const main = document.createElement('span');
+                main.className = 'main';
+                main.textContent = branchDisplay || wt.path.split('/').pop() || 'worktree';
+                const sub = document.createElement('span');
+                sub.className = 'branch-name';
+                sub.textContent = wt.path;
+                const mark = document.createElement('span');
+                mark.className = 'mark';
+                mark.textContent = isActive ? 'Active' : '';
+
+                const removeBtn = document.createElement('span');
+                removeBtn.className = 'ghost worktree-delete';
+                removeBtn.title = 'Remove worktree';
+                removeBtn.setAttribute('role', 'button');
+                removeBtn.setAttribute('tabindex', '0');
+                removeBtn.setAttribute('aria-label', 'Remove worktree ' + (branchDisplay || wt.path));
+                removeBtn.innerHTML = ${JSON.stringify(trashIcon)};
+                if (!isActive) {
+                    removeBtn.addEventListener('click', (event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        vscode.postMessage({ type: 'agent.worktree.remove', path: wt.path });
+                    });
+                } else {
+                    removeBtn.style.opacity = '0.38';
+                    removeBtn.style.pointerEvents = 'none';
+                }
+                option.append(main, sub, mark, removeBtn);
+                option.addEventListener('click', () => {
+                    closeInlineMenus();
+                    vscode.postMessage({ type: 'agent.worktree.select', path: wt.path });
+                });
+                wrapper.appendChild(option);
+                list.appendChild(wrapper);
+            }
+
+            worktreeMenu.appendChild(list);
+            worktreeMenu.classList.toggle('open', worktreeMenuOpen);
+        }
+
+        function openWorktreeMenu() {
+            closeHistory();
+            closeCheckpointPanel();
+            providerMenuOpen = false;
+            reasoningMenuOpen = false;
+            newSessionMenuOpen = false;
+            worktreeMenuOpen = !worktreeMenuOpen;
+            if (providerMenu) providerMenu.classList.remove('open');
+            if (reasoningMenu) reasoningMenu.classList.remove('open');
+            if (newSessionMenu) newSessionMenu.classList.remove('open');
+            vscode.postMessage({ type: 'agent.worktree.list' });
+            renderWorktreeMenu();
         }
 
         function workflowKey(workflow) {
@@ -1444,32 +2107,30 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
 
             const list = document.createElement('div');
             list.className = 'inline-popover-list';
-            if (currentWorkflowContext) {
-                const current = inlineOption('This workflow', currentWorkflowContext.name || 'Current workflow', 'Current', 'workflow');
-                current.disabled = isRunning;
-                current.addEventListener('click', () => startNewSession(currentWorkflowContext));
+            const menuWorkflowContext = currentWorkflowContext || openWorkflowContext;
+            if (menuWorkflowContext) {
+                const current = inlineOption('This workflow', menuWorkflowContext.name || 'Current workflow', 'Current', 'workflow');
+                current.addEventListener('click', () => startNewSession(menuWorkflowContext));
                 list.appendChild(current);
             }
 
             const blank = inlineOption('New workflow', 'Start without workflow context', '', 'workflow');
-            blank.disabled = isRunning;
             blank.addEventListener('click', () => startNewSession(null));
             list.appendChild(blank);
 
-            const workflows = Array.isArray(state.availableWorkflows) ? state.availableWorkflows : [];
+            const workflows = Array.isArray(state.availableWorkflows) ? state.availableWorkflows : availableWorkflowCache;
             if (workflows.length) {
                 const divider = document.createElement('div');
                 divider.className = 'inline-divider';
                 list.appendChild(divider);
             }
-            const currentKey = workflowKey(currentWorkflowContext);
+            const currentKey = workflowKey(menuWorkflowContext);
             for (const workflow of workflows) {
                 const key = workflowKey(workflow);
                 if (currentKey && key && key === currentKey) continue;
                 const label = workflow.name || workflow.id || workflow.filename || 'Workflow';
                 const detail = [workflow.filename, workflow.id].filter(Boolean).join(' · ') || 'Existing workflow';
                 const option = inlineOption(label, detail, '', 'workflow');
-                option.disabled = isRunning;
                 option.addEventListener('click', () => startNewSession(workflow));
                 list.appendChild(option);
             }
@@ -1683,8 +2344,21 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             if (state.provider && Array.isArray(state.modelOptions)) providerModelCache[state.provider] = state.modelOptions;
             selectReasoningButton.textContent = state.reasoningEffort ? 'Reasoning ' + state.reasoningEffort : 'Reasoning';
             selectReasoningButton.style.display = state.supportsReasoningEffort ? 'inline-block' : 'none';
+            if (selectWorktreeButton) {
+                activeWorktreePath = state.activeWorktree ? state.activeWorktree.path : null;
+                const wtLabel = state.activeWorktree
+                    ? (state.activeWorktree.branch ? state.activeWorktree.branch.replace('refs/heads/', '') : 'Worktree')
+                    : 'Workspace';
+                selectWorktreeButton.textContent = wtLabel;
+                selectWorktreeButton.title = state.activeWorktree ? state.activeWorktree.path : 'Current workspace';
+                selectWorktreeButton.classList.toggle('worktree-active', Boolean(state.activeWorktree));
+            }
+            if (worktreeWarningEl) {
+                worktreeWarningEl.classList.toggle('active', Boolean(state.activeWorktree));
+            }
             renderProviderMenu();
             renderReasoningMenu();
+            renderWorktreeMenu();
             renderNewSessionMenu();
             const usage = state.session && state.session.contextUsage;
             if (!usage || usage.source !== 'api') {
@@ -1711,8 +2385,8 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             if (!visibleEntries.length) {
                 return;
             }
-            for (const entry of visibleEntries) {
-                feed.appendChild(renderEntry(entry));
+            for (let idx = 0; idx < visibleEntries.length; idx += 1) {
+                feed.appendChild(renderEntry(visibleEntries[idx], idx));
             }
             if (shouldStickToBottom) {
                 feed.scrollTop = feed.scrollHeight;
@@ -1722,15 +2396,15 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             }
         }
 
-        function renderEntry(entry) {
+        function renderEntry(entry, index) {
             if (entry.kind === 'user-message') {
-                return textEntry('user', entry.text);
+                return userMessageEntry(entry);
             }
             if (entry.kind === 'system-notice') {
                 return textEntry('system', entry.text);
             }
             if (entry.kind === 'assistant-body') {
-                return textEntry('assistant' + (entry.streaming ? ' streaming' : ''), entry.text || '');
+                return assistantMessageEntry(entry);
             }
             if (entry.kind === 'context-usage') return document.createComment('context usage');
             if (entry.kind === 'workflow-context' || entry.kind === 'node-context') return document.createComment('context marker');
@@ -1739,17 +2413,14 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
                 el.className = 'entry compaction';
                 const isFallback = entry.event.source === 'fallback';
                 const title = isFallback ? 'Context compacted with fallback' : 'Context compacted';
-                const details = document.createElement('details');
-                details.className = 'details';
-                details.innerHTML = '<summary>Show compaction details</summary>' +
-                    '<div class="details-body">' +
-                    'Source: ' + escapeHtml(entry.event.source) + '\\n' +
-                    'Messages compacted: ' + escapeHtml(entry.event.messagesCompacted) + '\\n' +
-                    'Preserved recent messages: ' + escapeHtml(entry.event.preservedRecentMessages) +
-                    (entry.event.estimatedTokens ? '\\nEstimated tokens: ' + escapeHtml(entry.event.estimatedTokens) : '') +
-                    (entry.event.thresholdTokens ? '\\nThreshold tokens: ' + escapeHtml(entry.event.thresholdTokens) : '') +
-                    (entry.event.fallbackReason ? '\\nFallback reason: ' + escapeHtml(entry.event.fallbackReason) : '') +
-                    '</div>';
+                const detailText =
+                    'Source: ' + escapeText(entry.event.source) + '\\n' +
+                    'Messages compacted: ' + escapeText(entry.event.messagesCompacted) + '\\n' +
+                    'Preserved recent messages: ' + escapeText(entry.event.preservedRecentMessages) +
+                    (entry.event.estimatedTokens ? '\\nEstimated tokens: ' + escapeText(entry.event.estimatedTokens) : '') +
+                    (entry.event.thresholdTokens ? '\\nThreshold tokens: ' + escapeText(entry.event.thresholdTokens) : '') +
+                    (entry.event.fallbackReason ? '\\nFallback reason: ' + escapeText(entry.event.fallbackReason) : '');
+                const details = createPersistentDetails(getEntryDetailKey(entry, index), 'Show compaction details', detailText);
                 el.innerHTML = '<div class="entry-head"><div class="entry-title">' + escapeHtml(title) + '</div><div class="entry-subtle">' + escapeHtml(new Date(entry.timestamp).toLocaleTimeString()) + '</div></div><div>' + escapeHtml(entry.event.summary) + '</div>';
                 el.appendChild(details);
                 return el;
@@ -1762,22 +2433,256 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
                 const statusLabel = entry.status || entry.tone || '';
                 const statusIcon = STATUS_ICONS[entry.status] || '';
                 const title = entry.title || 'Operation';
+                const compactHtml = formatOperationCompactHtml(entry);
                 el.innerHTML = '<div class="entry-head">' +
                     '<div class="entry-title">' +
                     '<span class="entry-kind-icon" aria-hidden="true">' + icon + '</span>' +
                     '<span>' + escapeHtml(title) + '</span></div>' +
                     '<div class="entry-status' + escapeHtml(statusClass) + '" title="' + escapeHtml(statusLabel) + '" aria-label="' + escapeHtml(statusLabel) + '">' + statusIcon + '<span class="sr-only">' + escapeHtml(statusLabel) + '</span></div>' +
                     '</div>' +
-                    (entry.detail ? '<div>' + escapeHtml(entry.detail) + '</div>' : '');
+                    compactHtml;
                 if (entry.body || entry.summary) {
-                    const details = document.createElement('details');
-                    details.className = 'details';
-                    details.innerHTML = '<summary>Show details</summary><div class="details-body">' + escapeHtml(entry.body || entry.summary || '') + '</div>';
-                    el.appendChild(details);
+                    el.appendChild(createPersistentDetails(getEntryDetailKey(entry, index), 'Show details', formatOperationDetailsBody(entry)));
                 }
                 return el;
             }
             return textEntry('system', 'Unsupported entry');
+        }
+
+        function getEntryDetailKey(entry, index) {
+            return (entry && entry.id ? entry.id : (entry.kind || 'entry') + ':' + index) + ':details';
+        }
+
+        function createPersistentDetails(key, label, body) {
+            const details = document.createElement('details');
+            details.className = 'details';
+            details.open = expandedDetailKeys.has(key);
+            details.addEventListener('toggle', () => {
+                if (details.open) expandedDetailKeys.add(key);
+                else expandedDetailKeys.delete(key);
+            });
+            const summary = document.createElement('summary');
+            summary.textContent = label;
+            const content = document.createElement('div');
+            content.className = 'details-body';
+            content.textContent = escapeText(body);
+            details.append(summary, content);
+            return details;
+        }
+
+        function formatOperationCompactHtml(entry) {
+            if (entry.category === 'todo') return formatTodoCompactHtml(entry);
+            const command = getOperationCommand(entry);
+            const filePath = getOperationFilePath(entry);
+            const result = formatOperationResultPreview(entry, command);
+            const fileLabel = isPlanFileOperation(entry, filePath) ? 'Plan' : 'File';
+            if (!command && !filePath && !result) return '';
+            return '<div class="operation-compact">' +
+                (command ? operationRowHtml('Command', command, true) : '') +
+                (filePath ? operationRowHtml(fileLabel, filePath, true) : '') +
+                (result ? operationRowHtml(entry.category === 'file-read' ? 'Preview' : 'Output', result, false) : '') +
+                '</div>';
+        }
+
+        function operationRowHtml(label, value, code) {
+            return '<div class="operation-row"><span class="operation-label">' + escapeHtml(label) + '</span><' + (code ? 'code' : 'span') + ' class="operation-value' + (code ? ' operation-code' : '') + '">' + escapeHtml(value) + '</' + (code ? 'code' : 'span') + '></div>';
+        }
+
+        function getOperationCommand(entry) {
+            if (entry.category !== 'shell') return '';
+            for (const value of [entry.summary, entry.detail, entry.body]) {
+                const text = String(value || '').trim();
+                if (text.startsWith('$ ')) return text.slice(2).trim();
+            }
+            return '';
+        }
+
+        function getOperationFilePath(entry) {
+            if (entry.category !== 'file-read' && entry.category !== 'file-write') return '';
+            for (const value of [entry.summary, entry.detail, entry.body, entry.title]) {
+                const parsed = extractFilePathFromValue(value);
+                if (parsed) return parsed;
+            }
+            return '';
+        }
+
+        function extractFilePathFromValue(value) {
+            const seen = new Set();
+            function visit(candidate) {
+                if (candidate == null) return '';
+                if (typeof candidate === 'string') {
+                    const trimmed = candidate.trim();
+                    if (!trimmed) return '';
+                    if ((trimmed.startsWith('{') || trimmed.startsWith('[')) && !seen.has(trimmed)) {
+                        seen.add(trimmed);
+                        try { return visit(JSON.parse(trimmed)); } catch (e) { /* fall through */ }
+                    }
+                    const quoted = trimmed.match(/['"]([^'"]+\\/[^'"]+)['"]/);
+                    if (quoted) return quoted[1];
+                    const afterVerb = trimmed.match(/^(?:Read|Write|Edit)\\s+(.+)$/i);
+                    if (afterVerb && afterVerb[1].includes('/')) return afterVerb[1].trim();
+                    if (trimmed.startsWith('/') && !trimmed.includes('\\n')) return trimmed;
+                    return '';
+                }
+                if (Array.isArray(candidate)) {
+                    for (const item of candidate) {
+                        const filePath = visit(item);
+                        if (filePath) return filePath;
+                    }
+                    return '';
+                }
+                if (typeof candidate === 'object') {
+                    for (const key of ['file_path', 'filePath', 'path']) {
+                        if (typeof candidate[key] === 'string' && candidate[key].trim()) return candidate[key].trim();
+                    }
+                    for (const key of ['input', 'args', 'kwargs', 'update']) {
+                        const filePath = visit(candidate[key]);
+                        if (filePath) return filePath;
+                    }
+                }
+                return '';
+            }
+            return visit(value);
+        }
+
+        function isPlanFileOperation(entry, filePath) {
+            if (!filePath || !/\\.md$/i.test(filePath)) return false;
+            return /plan|planning|spec|proposal|implementation/i.test(filePath + ' ' + (entry.title || '') + ' ' + (entry.summary || ''));
+        }
+
+        function formatOperationResultPreview(entry, command) {
+            const raw = entry.category === 'shell'
+                ? (entry.body && String(entry.body).trim() !== ('$ ' + command) ? entry.body : '')
+                : (entry.detail || entry.summary || '');
+            const extracted = extractReadableToolText(raw);
+            if (extracted) return truncateCompactText(extracted);
+            if (looksLikeStructuredPayload(raw)) return '';
+            return truncateCompactText(raw);
+        }
+
+        function formatOperationDetailsBody(entry) {
+            if (entry.category === 'todo') {
+                const todoText = formatTodosText(extractTodosFromValue(entry.body || entry.summary || entry.detail));
+                if (todoText) return todoText;
+            }
+            const raw = entry.body || entry.summary || '';
+            const extracted = extractReadableToolText(raw);
+            return extracted || raw;
+        }
+
+        function formatTodoCompactHtml(entry) {
+            const todos = extractTodosFromValue(entry.body || entry.summary || entry.detail);
+            if (!todos.length) {
+                const result = formatOperationResultPreview(entry, '');
+                return result ? '<div class="operation-compact">' + operationRowHtml('Todos', result, false) + '</div>' : '';
+            }
+            const counts = todos.reduce((acc, todo) => {
+                const status = String(todo.status || 'pending');
+                acc[status] = (acc[status] || 0) + 1;
+                return acc;
+            }, {});
+            const active = todos.find((todo) => todo.status === 'in_progress') || todos.find((todo) => todo.status === 'pending') || todos[0];
+            const summary = [
+                todos.length + ' item' + (todos.length === 1 ? '' : 's'),
+                counts.in_progress ? counts.in_progress + ' in progress' : '',
+                counts.pending ? counts.pending + ' pending' : '',
+                counts.completed ? counts.completed + ' completed' : '',
+            ].filter(Boolean).join(' · ');
+            return '<div class="operation-compact">' +
+                operationRowHtml('Todos', summary, false) +
+                (active && active.content ? operationRowHtml(active.status === 'in_progress' ? 'Current' : 'Next', String(active.content), false) : '') +
+                formatTodoChecklistHtml(todos) +
+                '</div>';
+        }
+
+        function formatTodoChecklistHtml(todos) {
+            if (!todos.length) return '';
+            return '<div class="todo-checklist">' + todos.map((todo) => {
+                const status = String(todo.status || 'pending');
+                const normalized = status.replace(/_/g, '-');
+                const checked = status === 'completed';
+                const marker = checked ? '✓' : status === 'in_progress' ? '·' : '';
+                return '<div class="todo-item ' + escapeHtml(normalized) + '">' +
+                    '<span class="todo-box" aria-hidden="true">' + escapeHtml(marker) + '</span>' +
+                    '<span class="todo-text">' + escapeHtml(String(todo.content || '')) + '</span>' +
+                    '</div>';
+            }).join('') + '</div>';
+        }
+
+        function extractTodosFromValue(value) {
+            const seen = new Set();
+            function visit(candidate) {
+                if (candidate == null) return [];
+                if (typeof candidate === 'string') {
+                    const trimmed = candidate.trim();
+                    if (!trimmed || (!trimmed.startsWith('{') && !trimmed.startsWith('[')) || seen.has(trimmed)) return [];
+                    seen.add(trimmed);
+                    try { return visit(JSON.parse(trimmed)); } catch (e) { return []; }
+                }
+                if (Array.isArray(candidate)) {
+                    if (candidate.every((item) => item && typeof item === 'object' && 'content' in item)) return candidate;
+                    return candidate.flatMap(visit);
+                }
+                if (typeof candidate === 'object') {
+                    if (Array.isArray(candidate.todos)) return visit(candidate.todos);
+                    for (const key of ['update', 'input', 'args', 'kwargs']) {
+                        const todos = visit(candidate[key]);
+                        if (todos.length) return todos;
+                    }
+                }
+                return [];
+            }
+            return visit(value);
+        }
+
+        function formatTodosText(todos) {
+            if (!todos.length) return '';
+            return todos.map((todo) => '[' + String(todo.status || 'pending').replace(/_/g, ' ') + '] ' + String(todo.content || '')).join('\\n');
+        }
+
+        function truncateCompactText(value) {
+            const normalized = String(value || '').replace(/\\s+/g, ' ').trim();
+            if (!normalized) return '';
+            return normalized.length > 220 ? normalized.slice(0, 220) + '...' : normalized;
+        }
+
+        function looksLikeStructuredPayload(value) {
+            const text = String(value || '').trim();
+            return text.startsWith('{') || text.startsWith('[') || text.includes('"lc":') || text.includes('"kwargs":') || text.includes('ToolMessage');
+        }
+
+        function extractReadableToolText(value) {
+            const seen = new Set();
+            function visit(candidate) {
+                if (candidate == null) return '';
+                if (typeof candidate === 'string') {
+                    const trimmed = candidate.trim();
+                    if (!trimmed) return '';
+                    if ((trimmed.startsWith('{') || trimmed.startsWith('[')) && !seen.has(trimmed)) {
+                        seen.add(trimmed);
+                        try {
+                            return visit(JSON.parse(trimmed));
+                        } catch (e) {
+                            return looksLikeStructuredPayload(trimmed) ? '' : trimmed;
+                        }
+                    }
+                    return looksLikeStructuredPayload(trimmed) ? '' : trimmed;
+                }
+                if (Array.isArray(candidate)) {
+                    return candidate.map(visit).filter(Boolean).join('\\n');
+                }
+                if (typeof candidate === 'object') {
+                    if (candidate.kwargs && typeof candidate.kwargs.content === 'string') return visit(candidate.kwargs.content);
+                    if (typeof candidate.text === 'string') return visit(candidate.text);
+                    if (typeof candidate.content === 'string') return visit(candidate.content);
+                    if (Array.isArray(candidate.content)) return visit(candidate.content);
+                    if (candidate.kwargs) return visit(candidate.kwargs);
+                    if (candidate.update) return visit(candidate.update);
+                    if (candidate.output) return visit(candidate.output);
+                }
+                return '';
+            }
+            return visit(value);
         }
 
         function textEntry(kind, text) {
@@ -1787,7 +2692,110 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             return el;
         }
 
+        function userMessageEntry(entry) {
+            const wrap = document.createElement('div');
+            wrap.className = 'message-group user-message';
+            const el = document.createElement('div');
+            el.className = 'entry user';
+            const body = document.createElement('div');
+            body.className = 'entry-body';
+            body.textContent = entry.text || '';
+            el.appendChild(body);
+            wrap.appendChild(el);
+
+            const checkpointId = entry.checkpoint && entry.checkpoint.workbenchCheckpointId;
+            if (checkpointId) {
+                const actions = document.createElement('div');
+                actions.className = 'message-actions';
+                const rewind = document.createElement('button');
+                rewind.type = 'button';
+                rewind.className = 'message-action message-rewind';
+                rewind.title = 'Rewind to before this message';
+                rewind.setAttribute('aria-label', 'Rewind to before this message');
+                rewind.disabled = isRunning;
+                rewind.innerHTML = '${rewindIcon}';
+                rewind.addEventListener('click', () => {
+                    if (!state || !state.activeSessionId || isRunning) return;
+                    rewindMessageOptimistically(entry);
+                    vscode.postMessage({
+                        type: 'agent.message.rewind',
+                        sessionId: state.activeSessionId,
+                        messageId: entry.id,
+                    });
+                });
+                const copy = document.createElement('button');
+                copy.type = 'button';
+                copy.className = 'message-action';
+                copy.title = 'Copy message';
+                copy.setAttribute('aria-label', 'Copy message');
+                copy.innerHTML = '${copyIcon}';
+                copy.addEventListener('click', () => {
+                    vscode.postMessage({ type: 'clipboard-write', text: entry.text || '' });
+                });
+                actions.append(rewind, copy);
+                wrap.appendChild(actions);
+            }
+            return wrap;
+        }
+
+        function assistantMessageEntry(entry) {
+            const wrap = document.createElement('div');
+            wrap.className = 'message-group assistant-message';
+            const el = textEntry('assistant' + (entry.streaming ? ' streaming' : ''), entry.text || '');
+            wrap.appendChild(el);
+            if (!entry.streaming && entry.text) {
+                const actions = document.createElement('div');
+                actions.className = 'message-actions';
+                const copy = document.createElement('button');
+                copy.type = 'button';
+                copy.className = 'message-action';
+                copy.title = 'Copy response';
+                copy.setAttribute('aria-label', 'Copy response');
+                copy.innerHTML = '${copyIcon}';
+                copy.addEventListener('click', () => {
+                    vscode.postMessage({ type: 'clipboard-write', text: entry.text || '' });
+                });
+                actions.append(copy);
+                wrap.appendChild(actions);
+            }
+            return wrap;
+        }
+
+        function rewindMessageOptimistically(entry) {
+            if (!state || !state.session || !Array.isArray(state.session.entries)) return;
+            const entries = state.session.entries;
+            const idx = entries.findIndex((candidate) => candidate && candidate.kind === 'user-message' && candidate.id === entry.id);
+            if (idx < 0) return;
+            rewoundMessageIds.add(entry.id);
+            state.session.entries = entries.slice(0, idx);
+            state.session.contextUsage = undefined;
+            pendingPrompt = null;
+            renderPendingPrompt();
+            promptInput.value = entry.text || '';
+            renderAll();
+            promptInput.focus();
+            promptInput.selectionStart = promptInput.selectionEnd = promptInput.value.length;
+        }
+
+        let renderAllFrame = 0;
+        function scheduleRenderAll() {
+            if (renderAllFrame) return;
+            renderAllFrame = requestAnimationFrame(() => {
+                renderAllFrame = 0;
+                renderAll();
+            });
+        }
+
+        function flushScheduledRenderAll() {
+            if (!renderAllFrame) return;
+            cancelAnimationFrame(renderAllFrame);
+            renderAllFrame = 0;
+        }
+
         function renderAll() {
+            if (state && Array.isArray(state.availableWorkflows)) {
+                availableWorkflowCache = state.availableWorkflows;
+            }
             currentWorkflowContext = state && state.session ? state.session.workflowContext || null : null;
             setNodeContexts(state && state.session ? state.session.nodeContexts || [] : [], false);
             renderSessions();
@@ -1795,6 +2803,32 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             renderFeed();
             renderMentionMenu();
             if (checkpointOverlay && checkpointOverlay.classList.contains('open')) renderCheckpoints();
+        }
+
+        function incomingStateContainsRewoundMessage(nextState) {
+            if (!nextState || !nextState.session || !Array.isArray(nextState.session.entries) || !rewoundMessageIds.size) return false;
+            return nextState.session.entries.some((entry) => entry && entry.kind === 'user-message' && rewoundMessageIds.has(entry.id));
+        }
+
+        function incomingStateDropsLiveEntries(nextState) {
+            if (!state || !state.session || !nextState || !nextState.session) return false;
+            if (state.activeSessionId !== nextState.activeSessionId) return false;
+            const currentEntries = Array.isArray(state.session.entries) ? state.session.entries : [];
+            const nextEntries = Array.isArray(nextState.session.entries) ? nextState.session.entries : [];
+            if (nextEntries.length >= currentEntries.length) return false;
+            const hasLiveEntry = currentEntries.some((entry) =>
+                entry && ((entry.kind === 'assistant-body' && entry.streaming) || (entry.kind === 'operation' && entry.status === 'running'))
+            );
+            return hasLiveEntry && (isRunning || runtimeFinalizing);
+        }
+
+        function acceptIncomingStateMessage(message) {
+            const sequence = Number(message.stateSequence || 0);
+            if (sequence && sequence < lastStateSequence) return false;
+            if (incomingStateContainsRewoundMessage(message.state)) return false;
+            if (incomingStateDropsLiveEntries(message.state)) return false;
+            if (sequence) lastStateSequence = sequence;
+            return true;
         }
 
         function getMentionQuery() {
@@ -1916,6 +2950,20 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             });
         }
 
+        function stopRunOptimistically() {
+            if (!state || !state.session || !Array.isArray(state.session.entries)) return;
+            let entries = finalizePendingOperations([...state.session.entries], 'done');
+            const last = entries[entries.length - 1];
+            if (!last || last.kind !== 'system-notice' || last.text !== 'Run stopped.') {
+                entries.push({ kind: 'system-notice', id: crypto.randomUUID(), text: 'Run stopped.', timestamp: Date.now() });
+            }
+            state.session.entries = entries;
+            pendingPrompt = null;
+            renderPendingPrompt();
+            setRunning(false);
+            renderAll();
+        }
+
         function stripEnvironmentDetails(text) {
             let value = String(text || '');
             const openTag = '<environment_details>';
@@ -1945,11 +2993,11 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             const finalText = stripEnvironmentDetails(response);
             let chosenText = finalText;
             const assistantTexts = [];
-            let firstAssistantIdx = -1;
+            let assistantEntryId;
             for (let idx = userIdx + 1; idx < entries.length; idx += 1) {
                 const entry = entries[idx];
                 if (entry && entry.kind === 'assistant-body' && stripEnvironmentDetails(entry.text)) {
-                    if (firstAssistantIdx < 0) firstAssistantIdx = idx;
+                    if (!assistantEntryId) assistantEntryId = entry.id;
                     assistantTexts.push(stripEnvironmentDetails(entry.text));
                 }
             }
@@ -1959,31 +3007,43 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
                 }
             }
             const result = [];
-            let inserted = false;
             for (let idx = 0; idx < entries.length; idx += 1) {
                 const entry = entries[idx];
                 if (idx > userIdx && entry.kind === 'assistant-body') {
-                    if (!inserted && chosenText && idx === firstAssistantIdx) {
-                        result.push({ kind: 'assistant-body', id: entry.id || crypto.randomUUID(), text: chosenText, streaming: false, finalState: finalState });
-                        inserted = true;
-                    }
                     continue;
                 }
                 result.push(entry);
             }
-            if (!inserted && chosenText) {
-                result.push({ kind: 'assistant-body', id: crypto.randomUUID(), text: chosenText, streaming: false, finalState: finalState });
+            if (chosenText) {
+                result.push({ kind: 'assistant-body', id: assistantEntryId || crypto.randomUUID(), text: chosenText, streaming: false, finalState: finalState });
             }
             return result;
+        }
+
+        function insertBeforeFinalAssistant(entries, entry) {
+            const userIdx = lastUserMessageIndex(entries);
+            for (let idx = entries.length - 1; idx > userIdx; idx -= 1) {
+                const candidate = entries[idx];
+                if (candidate && candidate.kind === 'assistant-body') {
+                    entries.splice(idx, 0, entry);
+                    return;
+                }
+            }
+            entries.push(entry);
         }
 
         function applyStreamEvent(event) {
             if (!state || !state.session) return;
             let entries = Array.isArray(state.session.entries) ? [...state.session.entries] : [];
+            let deferRender = false;
             if (event.type === 'start') {
                 entries = entries.filter((entry) => entry.kind !== 'context-usage');
                 state.session.contextUsage = undefined;
                 state.activeSessionId = event.sessionId;
+                if (pendingPrompt && pendingPrompt.text === event.message) {
+                    pendingPrompt = null;
+                    renderPendingPrompt();
+                }
                 const last = entries[entries.length - 1];
                 if (!last || last.kind !== 'user-message' || last.text !== event.message) {
                     entries.push({ kind: 'user-message', id: crypto.randomUUID(), text: event.message || '', timestamp: Date.now() });
@@ -2001,26 +3061,31 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
                 } else {
                     entries.push({ kind: 'assistant-body', id: crypto.randomUUID(), text: event.delta || '', streaming: true });
                 }
+                deferRender = true;
             } else if (event.type === 'final') {
                 entries = finalizePendingOperations(entries, 'done');
                 entries = consolidateFinalAssistant(entries, event.response || '', event.finalState);
+                runtimeFinalizing = Boolean(event.runtimeFinalizing);
+                setRunning(false);
+                renderRuntimeFinalizing();
             } else if (event.type === 'operation') {
                 const idx = findMatchingPendingOperationIndex(entries, event.operationId, event.label, event.category);
+                const existing = idx >= 0 && entries[idx] && entries[idx].kind === 'operation' ? entries[idx] : null;
                 const opEntry = {
                     kind: 'operation',
-                    id: event.operationId,
+                    id: event.operationId || (existing && existing.id) || crypto.randomUUID(),
                     tone: event.status === 'error' ? 'error' : event.status === 'done' ? 'success' : 'info',
                     title: event.label,
-                    detail: event.summary,
+                    detail: event.category === 'shell' && existing && existing.summary ? existing.summary : event.summary,
                     category: event.category,
                     status: event.status,
-                    body: event.body,
-                    summary: event.summary,
+                    body: event.body || (existing && existing.body),
+                    summary: event.category === 'shell' && existing && existing.summary ? existing.summary : event.summary,
                     startedAt: event.startedAt,
                     endedAt: event.endedAt,
                 };
                 if (idx >= 0) entries[idx] = opEntry;
-                else entries.push(opEntry);
+                else insertBeforeFinalAssistant(entries, opEntry);
             } else if (event.type === 'progress') {
                 const idx = findMatchingPendingOperationIndex(entries, '', event.title, event.phase || 'phase');
                 const progressEntry = {
@@ -2033,7 +3098,7 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
                     status: event.tone === 'error' ? 'error' : 'running',
                 };
                 if (idx >= 0) entries[idx] = progressEntry;
-                else entries.push(progressEntry);
+                else insertBeforeFinalAssistant(entries, progressEntry);
             } else if (event.type === 'compaction') {
                 const compactionEntry = { kind: 'compaction', id: crypto.randomUUID(), timestamp: Date.now(), event: event };
                 entries.push(compactionEntry);
@@ -2058,13 +3123,23 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
                 entries.push({ kind: 'system-notice', id: crypto.randomUUID(), text: 'Error: ' + event.error, timestamp: Date.now() });
             }
             state.session.entries = entries;
-            renderAll();
+            if (deferRender) scheduleRenderAll();
+            else {
+                flushScheduledRenderAll();
+                renderAll();
+            }
         }
 
         function sendPrompt() {
             const text = promptInput.value.trim();
-            if (!text || isRunning || !state) return;
+            if (!text || !state) return;
             promptInput.value = '';
+            if (isRunning || runtimeFinalizing) {
+                pendingPrompt = { text, mode: 'pending' };
+                renderPendingPrompt();
+                vscode.postMessage({ type: 'agent.queue', text, workflowId, nodeContexts: currentNodeContexts, sessionId: state.activeSessionId });
+                return;
+            }
             vscode.postMessage({ type: 'agent.send', text, workflowId, nodeContexts: currentNodeContexts, sessionId: state.activeSessionId });
         }
 
@@ -2094,6 +3169,7 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             if (providerMenu && (providerMenu.contains(target) || selectModelButton.contains(target))) return;
             if (reasoningMenu && (reasoningMenu.contains(target) || selectReasoningButton.contains(target))) return;
             if (newSessionMenu && (newSessionMenu.contains(target) || newSessionHeaderButton.contains(target))) return;
+            if (worktreeMenu && (worktreeMenu.contains(target) || selectWorktreeButton.contains(target))) return;
             closeInlineMenus();
         }, true);
         on(promptInput, 'input', renderMentionMenu);
@@ -2102,7 +3178,11 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             autoScrollFeed = isFeedNearBottom();
         });
 
-        on(stopButton, 'click', () => vscode.postMessage({ type: 'agent.stop' }));
+        on(stopButton, 'click', () => {
+            stopButton.disabled = true;
+            stopRunOptimistically();
+            vscode.postMessage({ type: 'agent.stop' });
+        });
         on(historyOpenButton, 'click', openHistory);
         on(historyCloseButton, 'click', closeHistory);
         on(historyOverlay, 'click', (event) => {
@@ -2129,8 +3209,8 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             renderProviderMenu();
             renderReasoningMenu();
         });
+        on(selectWorktreeButton, 'click', openWorktreeMenu);
         function startNewSession(workflow) {
-            if (isRunning) return;
             closeHistory();
             closeCheckpointPanel();
             closeInlineMenus();
@@ -2153,6 +3233,20 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             const message = event.data;
             if (!message || typeof message !== 'object') return;
 
+            if (message.type === 'panel.visibility') {
+                const isVisible = Boolean(message.visible);
+                if (!isVisible) {
+                    if (frame && frame.src !== 'about:blank') {
+                        frame.src = 'about:blank';
+                    }
+                } else {
+                    if (frame && frame.src !== workflowUrl && workflowUrl) {
+                        frame.src = workflowUrl;
+                    }
+                }
+                return;
+            }
+
             if (message.type === 'workflow.reload') {
                 vscode.postMessage({ type: 'workflow.reloadAck', workflowId, hasFrame: Boolean(frame), url: workflowReloadUrl || workflowUrl || '' });
                 reloadWorkflowFrame();
@@ -2163,10 +3257,42 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
                 const nextWorkflowUrl = message.url;
                 const shouldUpdateFrame = nextWorkflowUrl !== workflowUrl;
                 workflowId = String(message.workflowId || workflowId);
+                workflowName = String(message.workflowName || workflowName || workflowId || 'Current workflow');
+                workflowFilename = String(message.workflowFilename || workflowFilename || '');
+                workflowFilePath = String(message.workflowFilePath || workflowFilePath || '');
+                openWorkflowContext = workflowId || workflowFilename || workflowFilePath
+                    ? { id: workflowId || undefined, name: workflowName, filename: workflowFilename || undefined, filePath: workflowFilePath || undefined }
+                    : null;
                 workflowUrl = nextWorkflowUrl;
                 workflowReloadUrl = typeof message.reloadUrl === 'string' && message.reloadUrl ? message.reloadUrl : workflowUrl;
+                workflowEndpoints = message.endpoints && typeof message.endpoints === 'object' ? message.endpoints : {};
+                const nextWorkflowFormTestUrl = typeof message.formTestUrl === 'string' ? message.formTestUrl : (workflowEndpoints.formTestUrl || '');
+                if (nextWorkflowFormTestUrl !== workflowFormTestUrl) {
+                    workflowFormTestUrl = nextWorkflowFormTestUrl;
+                    lastWorkflowFormTestOpenUrl = '';
+                    lastWorkflowFormTestOpenAt = 0;
+                }
                 try { iframeOrigin = new URL(workflowUrl).origin; } catch (e) { iframeOrigin = 'src'; }
                 if (frame && shouldUpdateFrame) frame.src = workflowUrl;
+                return;
+            }
+
+            if (message.type === 'n8n-external-navigation' && typeof message.url === 'string') {
+                if (!isWorkflowFrameEvent(event)) return;
+                postN8nExternalNavigation(message.url, message.reason || inferN8nExternalNavigationReason(message.url, 'popup'), message);
+                return;
+            }
+
+            if (message.type === 'n8n-open-external' && typeof message.url === 'string') {
+                if (!isWorkflowFrameEvent(event)) return;
+                postN8nExternalNavigation(message.url, 'popup', message);
+                return;
+            }
+
+            if (message.type === 'n8n-form-test-ready') {
+                if (!isWorkflowFrameEvent(event)) return;
+                if (!claimWorkflowFormTestOpen(workflowFormTestUrl)) return;
+                postN8nExternalNavigation(workflowFormTestUrl, 'form-trigger', message);
                 return;
             }
 
@@ -2214,12 +3340,31 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
             }
 
             if (message.type === 'agent.status') {
-                setRunning(message.status === 'running' || message.status === 'stopping');
+                if (message.status === 'idle') runtimeFinalizing = false;
+                setRunning(message.status === 'running');
+                renderRuntimeFinalizing();
+                return;
+            }
+
+            if (message.type === 'agent.error') {
+                pendingPrompt = null;
+                renderPendingPrompt();
+                return;
+            }
+
+            if (message.type === 'agent.messageRewind') {
+                pendingPrompt = null;
+                renderPendingPrompt();
+                promptInput.value = typeof message.prompt === 'string' ? message.prompt : '';
+                promptInput.focus();
+                promptInput.selectionStart = promptInput.selectionEnd = promptInput.value.length;
                 return;
             }
 
             if (message.type === 'agent.state') {
+                if (!acceptIncomingStateMessage(message)) return;
                 state = message.state || null;
+                activeWorktreePath = state && state.activeWorktree ? state.activeWorktree.path : null;
                 renderAll();
                 return;
             }
@@ -2231,12 +3376,23 @@ export function buildAgentWorkbenchHtml(input: AgentWorkbenchHtmlInput): string 
                 return;
             }
 
+            if (message.type === 'agent.worktrees') {
+                if (state) {
+                    state.availableWorktrees = Array.isArray(message.worktrees) ? message.worktrees : [];
+                    state.activeWorktree = state.availableWorktrees.find((wt) => wt.path === message.activePath) || null;
+                    activeWorktreePath = typeof message.activePath === 'string' && message.activePath ? message.activePath : null;
+                    renderWorktreeMenu();
+                }
+                return;
+            }
+
             if (message.type === 'agent.streamEvent') {
                 applyStreamEvent(message.event || {});
                 return;
             }
         });
 
+        initializeSplitResizer();
         vscode.postMessage({ type: 'agent.ready' });
     </script>
 </body>

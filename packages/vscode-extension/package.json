@@ -2,7 +2,7 @@
   "name": "n8n-as-code",
   "displayName": "n8n as code",
   "description": "Edit your n8n workflows directly in VS Code with AI assistance.",
-  "version": "2.8.0",
+  "version": "2.36.0",
   "private": true,
   "publisher": "etienne-lescot",
   "files": [
@@ -24,12 +24,6 @@
     "workspaceContains:n8nac-config.json",
     "onView:n8n-explorer.workflows",
     "onCommand:n8n.configure",
-    "onCommand:n8n.migrateWorkspaceConfiguration",
-    "onCommand:n8n.migrateLegacyWorkspace",
-    "onCommand:n8n.migrateGlobalInstancesToEnvironments",
-    "onCommand:n8n.switchInstance",
-    "onCommand:n8n.pinWorkspaceInstance",
-    "onCommand:n8n.clearWorkspaceInstance",
     "onCommand:n8n.deleteInstance",
     "onCommand:n8n.init",
     "onCommand:n8n.openBoard",
@@ -95,26 +89,6 @@
         "command": "n8n.configure",
         "title": "n8n: Configure",
         "icon": "$(settings-gear)"
-      },
-      {
-        "command": "n8n.migrateWorkspaceConfiguration",
-        "title": "n8n: Run Required Migration",
-        "icon": "$(repo-sync)"
-      },
-      {
-        "command": "n8n.switchInstance",
-        "title": "n8n: Select Global Instance",
-        "icon": "$(list-selection)"
-      },
-      {
-        "command": "n8n.pinWorkspaceInstance",
-        "title": "n8n: Pin Instance for Workspace",
-        "icon": "$(pinned)"
-      },
-      {
-        "command": "n8n.clearWorkspaceInstance",
-        "title": "n8n: Clear Workspace Instance Pin",
-        "icon": "$(pinned-dirty)"
       },
       {
         "command": "n8n.deleteInstance",
@@ -336,29 +310,9 @@
     "configuration": {
       "title": "n8n as Code",
       "properties": {
-        "n8n.host": {
-          "type": "string",
-          "description": "Base URL of n8n instance"
-        },
-        "n8n.apiKey": {
-          "type": "string",
-          "description": "n8n API Key"
-        },
-        "n8n.syncFolder": {
-          "type": "string",
-          "default": "workflows",
-          "description": "Local folder to sync workflows"
-        },
-        "n8n.projectId": {
-          "type": "string",
-          "description": "Project ID to sync (managed by the extension; use the Configure command to select)"
-        },
-        "n8n.projectName": {
-          "type": "string",
-          "description": "Project name to display (managed by the extension; use the Configure command to select)"
-        },
         "n8n.agent.provider": {
           "type": "string",
+          "included": false,
           "enum": [
             "anthropic",
             "openai",
@@ -376,16 +330,19 @@
         },
         "n8n.agent.model": {
           "type": "string",
+          "included": false,
           "default": "",
           "description": "Optional model override for the embedded n8n Agent Workbench. Leave empty to use the provider default."
         },
         "n8n.agent.baseUrl": {
           "type": "string",
+          "included": false,
           "default": "",
           "description": "Optional OpenAI-compatible base URL for the embedded n8n Agent Workbench."
         },
         "n8n.agent.reasoningEffort": {
           "type": "string",
+          "included": false,
           "enum": [
             "none",
             "minimal",
@@ -395,7 +352,7 @@
             "xhigh"
           ],
           "default": "",
-          "description": "Optional reasoning effort override for eligible OpenAI account models used by the embedded n8n Agent Workbench. Leave empty to use the Yagr default."
+          "description": "Optional reasoning effort override for eligible OpenAI account models used by the embedded n8n Agent Workbench. Leave empty to use the provider default."
         }
       }
     }
@@ -420,18 +377,23 @@
     "langchain"
   ],
   "dependencies": {
-    "@n8n-as-code/manager-adapter": "2.0.3",
-    "@n8n-as-code/n8n-manager-core": "^0.7.0",
-    "@n8n-as-code/skills": "2.1.3",
-    "@n8n-as-code/telemetry": "2.0.0",
+    "@langchain/anthropic": "^1.3.29",
+    "@langchain/google-genai": "^2.1.30",
+    "@langchain/langgraph": "^1.3.2",
+    "@langchain/langgraph-checkpoint": "^1.0.2",
+    "@langchain/mcp-adapters": "^1.1.3",
+    "@langchain/mistralai": "^1.0.8",
+    "@langchain/openai": "^1.4.5",
+    "@n8n-as-code/manager-adapter": "2.0.4",
+    "@n8n-as-code/n8n-manager-core": "^0.7.1",
+    "@n8n-as-code/skills": "2.3.0",
+    "@n8n-as-code/telemetry": "2.0.1",
     "@n8n-as-code/workflow-core": "2.0.0",
     "@reduxjs/toolkit": "^2.11.2",
-    "@yagr/deepagent-bootstrap": "^0.1.2",
-    "@yagr/provider-runtime": "^0.1.2",
-    "@yagr/session-service": "^0.1.2",
-    "@yagr/stream-adapter": "^0.1.3",
+    "deepagents": "^1.10.2",
     "http-proxy": "^1.18.1",
-    "n8nac": "2.2.1",
+    "langchain": "^1.4.1",
+    "n8nac": "2.4.0",
     "react": "^19.2.1",
     "react-dom": "^19.2.1",
     "react-redux": "^9.2.0",
@@ -451,13 +413,21 @@
     "typescript": "^5.3.3"
   },
   "scripts": {
-    "vscode:prepublish": "npm run build",
-    "compile": "tsc -b",
+    "vscode:prepublish": "npm run build && npm run prune-package-artifacts",
+    "compile": "tsc -b --force",
     "watch": "tsc -b -w",
     "package-bundle": "node esbuild.config.js",
     "copy-assets": "node scripts/copy-assets.mjs",
+    "prune-package-artifacts": "node scripts/prune-package-artifacts.mjs",
+    "smoke:vsix-runtime": "node scripts/smoke-vsix-runtime.mjs",
     "build": "npm run compile && npm run copy-assets && npm run package-bundle",
     "clean": "rm -rf out assets tsconfig.tsbuildinfo",
-    "test": "npm run compile && npx tsx --test tests/unit/*.test.ts"
+    "test": "npm run compile && npx tsx --test tests/unit/*.test.ts",
+    "test:integration:providers": "node scripts/run-provider-stream-v3-integrations.mjs",
+    "test:integration:providers:single": "npx tsx --test tests/integration/provider-stream-v3.integration.test.ts",
+    "test:integration:native-mcp-benchmark": "npx tsx --test tests/integration/native-mcp-agent-benchmark.integration.test.ts",
+    "test:integration:native-mcp-agent": "npx tsx --test tests/integration/native-mcp-agent-routing.integration.test.ts",
+    "test:integration:tool-usage": "npx tsx --test tests/integration/tool-usage-workflow-authoring.integration.test.ts",
+    "test:integration:workbench-runtime": "npx tsx --test tests/integration/workbench-runtime-authoring.integration.test.ts"
   }
 }

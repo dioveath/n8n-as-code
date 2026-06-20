@@ -41,15 +41,14 @@ describe('AiContextGenerator', () => {
             expect(agentsContent).toContain('.github/agents/n8n-architect.agent.md');
             expect(agentsContent).toContain('.agents/skills/n8n-architect/SKILL.md');
             expect(agentsContent).toContain('n8nac backend resolution remains the only source');
-            expect(agentsContent).toContain('workspace status --json');
-            expect(agentsContent).toContain('workspace migrate --json');
-            expect(agentsContent.indexOf('workspace migrate --json')).toBeLessThan(agentsContent.indexOf('workspace status --json'));
+            expect(agentsContent).toContain('env status --json');
+            expect(agentsContent).not.toContain('workspace migrate --json');
+            expect(agentsContent).not.toContain('workspace status --json');
             expect(agentsContent).toContain('npx --yes @n8n-as-code/n8n-manager');
-            expect(agentsContent).toContain('Use the returned `workflowDir` exactly as provided.');
-            expect(agentsContent).toContain('Treat it as an opaque backend-derived path');
-            expect(agentsContent).toContain('`syncFolder` is only the user-configured sync root');
-            expect(agentsContent).toContain('instance user identifier');
-            expect(architectSkillPath && fs.readFileSync(architectSkillPath, 'utf-8')).toContain('--sync-folder workflows');
+            expect(agentsContent).toContain('Use the returned `workflowsPath` exactly as provided.');
+            expect(agentsContent).toContain('Do not reconstruct `workflowsPath`');
+            expect(agentsContent).toContain('legacy sync fields');
+            expect(architectSkillPath && fs.readFileSync(architectSkillPath, 'utf-8')).toContain('--workflows-path workflows/<name>');
             expect(architectSkillPath && fs.readFileSync(architectSkillPath, 'utf-8')).not.toContain('--sync-folder workflows/<name>');
             expect(agentsContent).toContain('<!-- n8n-as-code-end -->');
         });
@@ -61,9 +60,9 @@ describe('AiContextGenerator', () => {
             const architectAgent = fs.readFileSync(path.join(tempDir, '.github/agents/n8n-architect.agent.md'), 'utf-8');
             const architectSkill = fs.readFileSync(path.join(tempDir, '.agents/skills/n8n-architect/SKILL.md'), 'utf-8');
 
-            expect(agentsContent).toContain('npx --yes n8nac@next workspace status --json');
-            expect(agentsContent).toContain('npx --yes n8nac@next workspace migrate --json');
-            expect(agentsContent.indexOf('npx --yes n8nac@next workspace migrate --json')).toBeLessThan(agentsContent.indexOf('npx --yes n8nac@next workspace status --json'));
+            expect(agentsContent).toContain('npx --yes n8nac@next env status --json');
+            expect(agentsContent).not.toContain('npx --yes n8nac@next workspace migrate --json');
+            expect(agentsContent).not.toContain('npx --yes n8nac@next workspace status --json');
             expect(agentsContent).toContain('npx --yes @n8n-as-code/n8n-manager@next ...');
             expect(architectAgent).toContain('npx --yes @n8n-as-code/n8n-manager@next instance list');
             expect(architectSkill).toContain('npx --yes @n8n-as-code/n8n-manager@next instance list');
@@ -190,12 +189,39 @@ describe('AiContextGenerator', () => {
             expect(content).not.toContain('{{N8N_MANAGER_CMD}}');
         });
 
+        test('n8n-architect skill routes native MCP assist only for complementary live use cases', () => {
+            const content = generator.getAgentSkillContent('n8n-architect');
+
+            expect(content).toContain('The `n8n-as-code` MCP server is a client adapter for N8NAC tools.');
+            expect(content).toContain('The native n8n MCP server is a separate live n8n instance endpoint.');
+            expect(content).toContain('Default to local `npx --yes n8nac` for code-first workflow authoring, validation, pull, push');
+            expect(content).toContain('Use `npx --yes n8nac skills` as the bundled offline knowledge default.');
+            expect(content).toContain('Native MCP assist is configured per n8n-as-code environment. When creating or updating an environment, offer to configure it with `npx --yes n8nac native-mcp configure <environment> --token-stdin`; do not ask the user to manually configure a separate MCP server for Claude Code or the VS Code Workbench.');
+            expect(content).toContain('Check native availability with `npx --yes n8nac native-mcp status --include-tools --json` before relying on native tools.');
+            expect(content).toContain('For user requests about the current/live n8n instance, existing remote workflows, available nodes in this instance, credential metadata, projects, folders, executions, drift, or duplicate discovery, prefer native MCP read-only tools after the status check.');
+            expect(content).toContain('Do not treat the presence of any MCP server as permission to call native n8n MCP tools.');
+            expect(content).toContain('Native n8n MCP is used if and only if the generated execution or investigation strategy needs live n8n capabilities that local N8NAC cannot provide as well.');
+
+            expect(content).toContain('Workflow authoring, editing, pull, push, sync, credentials, and durable workflow changes: use local');
+            expect(content).toContain('Offline node knowledge, examples, documentation, and schema-first authoring: use local');
+            expect(content).toContain('Live workflow discovery, drift investigation, projects, folders, credentials metadata, duplicate discovery, and execution inspection: prefer native MCP read-only tools when configured because the user is asking for current instance state.');
+            expect(content).toContain('Connected-version node definitions or server-side validation: prefer native MCP read-only tools when the user asks what is available in this instance or needs validation against the connected n8n version.');
+            expect(content).toContain('Runtime execution: prefer `npx --yes n8nac test` for real webhook, chat, or form trigger contracts; prefer native runtime execution only for explicit workflow-ID execution, non-webhook testing, native pin-data preparation, or direct execution diagnostics.');
+            expect(content).toContain('Direct native workflow creation, update, publish, unpublish, archive, or destructive operations: do not use them as an automatic path; require an explicit direct-native request and sync-back plan.');
+
+            expect(content).toContain('do not run it just because the tool exists');
+            expect(content).toContain('Do not use native MCP create, update, publish, unpublish, archive, or destructive data-table tools');
+            expect(content).toContain('N8NAC_NATIVE_MCP_ALLOW_REMOTE=1');
+            expect(content).toContain('N8NAC_NATIVE_MCP_ALLOW_EXECUTION_DATA=1');
+            expect(content).toContain('Never put native MCP tokens in project files, generated docs, command arguments, or responses.');
+            expect(content).not.toContain('Default to native MCP');
+        });
+
         test('n8n-architect skill contains workflow and schema-first guidance', () => {
             const content = generator.getAgentSkillContent('n8n-architect');
 
-            expect(content).toContain('workspace migrate --json');
             expect(content).toContain('env status --json');
-            expect(content).toContain('workflowDir');
+            expect(content).toContain('workflowsPath');
             expect(content).toContain('node-info <nodeName>');
             expect(content).toContain('ai_tool: [this.Tool.output]');
             expect(content).toContain('Reading Workflow Files Efficiently');

@@ -1,7 +1,12 @@
 import * as vscode from 'vscode';
 import { getAgentProviderSecretKey } from './agent-runtime-controller.js';
+import { fetchGitHubCopilotModels } from './agent-provider-runtime/copilot-account.js';
+import { readAgentProviderSettings, updateAgentProviderSettings } from './agent-provider-settings.js';
+import { getReasoningCapability, normalizeReasoningEffortForCapability, type AgentReasoningEffort } from './agent-provider-capabilities.js';
 
-export type YagrModelProvider =
+export { AGENT_REASONING_EFFORTS } from './agent-provider-capabilities.js';
+
+export type AgentModelProvider =
     | 'anthropic'
     | 'openai'
     | 'google'
@@ -15,12 +20,10 @@ export type YagrModelProvider =
 
 export type ProviderAuthKind = 'api-key' | 'oauth-device' | 'setup-token' | 'none';
 
-export type YagrReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+export type AgentProviderReasoningEffort = AgentReasoningEffort;
 
-export const YAGR_REASONING_EFFORTS: readonly YagrReasoningEffort[] = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'];
-
-export interface YagrProviderDefinition {
-    id: YagrModelProvider;
+export interface AgentProviderDefinition {
+    id: AgentModelProvider;
     label: string;
     description: string;
     defaultModel: string;
@@ -31,8 +34,8 @@ export interface YagrProviderDefinition {
     canDiscoverModels: boolean;
 }
 
-export interface YagrProviderConnectionState {
-    id: YagrModelProvider;
+export interface AgentProviderConnectionState {
+    id: AgentModelProvider;
     label: string;
     description: string;
     authKind: ProviderAuthKind;
@@ -45,7 +48,7 @@ export interface YagrProviderConnectionState {
     model?: string;
     baseUrl?: string;
     supportsReasoningEffort?: boolean;
-    reasoningEffort?: YagrReasoningEffort;
+    reasoningEffort?: AgentProviderReasoningEffort;
 }
 
 type DeviceChallenge = {
@@ -60,6 +63,15 @@ type DeviceChallenge = {
 const OPENAI_CODEX_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
 const OPENAI_CODEX_DEVICE_REDIRECT_URI = 'https://auth.openai.com/deviceauth/callback';
 const DISABLED_PROVIDERS_STATE_KEY = 'n8n.agent.disabledProviders';
+const MINIMAX_DISCOVERY_CANDIDATE_MODELS = [
+    'MiniMax-M2.7',
+    'MiniMax-M2.7-highspeed',
+    'MiniMax-M2.5',
+    'MiniMax-M2.5-highspeed',
+    'MiniMax-M2.1',
+    'MiniMax-M2.1-highspeed',
+    'MiniMax-M2',
+] as const;
 
 const MODEL_LIST_MAPPER = (payload: Record<string, unknown>): string[] => {
     const data = Array.isArray(payload.data) ? payload.data : [];
@@ -69,7 +81,7 @@ const MODEL_LIST_MAPPER = (payload: Record<string, unknown>): string[] => {
         .sort((left, right) => left.localeCompare(right));
 };
 
-export const YAGR_PROVIDER_DEFINITIONS: Record<YagrModelProvider, YagrProviderDefinition> = {
+export const AGENT_PROVIDER_DEFINITIONS: Record<AgentModelProvider, AgentProviderDefinition> = {
     anthropic: {
         id: 'anthropic',
         label: 'Claude API',
@@ -155,7 +167,7 @@ export const YAGR_PROVIDER_DEFINITIONS: Record<YagrModelProvider, YagrProviderDe
         requiresApiKey: true,
         authKind: 'api-key',
         envKeys: ['MINIMAX_API_KEY'],
-        canDiscoverModels: false,
+        canDiscoverModels: true,
     },
     'minimax-token-plan': {
         id: 'minimax-token-plan',
@@ -166,7 +178,7 @@ export const YAGR_PROVIDER_DEFINITIONS: Record<YagrModelProvider, YagrProviderDe
         requiresApiKey: true,
         authKind: 'api-key',
         envKeys: ['MINIMAX_TOKEN_PLAN_API_KEY'],
-        canDiscoverModels: false,
+        canDiscoverModels: true,
     },
     'openai-compatible': {
         id: 'openai-compatible',
@@ -180,49 +192,49 @@ export const YAGR_PROVIDER_DEFINITIONS: Record<YagrModelProvider, YagrProviderDe
     },
 };
 
-export const YAGR_SELECTABLE_PROVIDERS = Object.freeze(Object.keys(YAGR_PROVIDER_DEFINITIONS) as YagrModelProvider[]);
+export const AGENT_SELECTABLE_PROVIDERS = Object.freeze(Object.keys(AGENT_PROVIDER_DEFINITIONS) as AgentModelProvider[]);
 
-export function normalizeYagrProviderId(provider?: string): YagrModelProvider | undefined {
+export function normalizeAgentProviderId(provider?: string): AgentModelProvider | undefined {
     const normalized = provider?.trim().toLowerCase();
     if (!normalized) return undefined;
     if (normalized === 'claude') return 'anthropic';
     if (normalized === 'anthropic-proxy') return 'anthropic';
     if (normalized === 'gemini') return 'google';
-    return normalized in YAGR_PROVIDER_DEFINITIONS ? normalized as YagrModelProvider : undefined;
+    return normalized in AGENT_PROVIDER_DEFINITIONS ? normalized as AgentModelProvider : undefined;
 }
 
-export function providerNeedsBaseUrlInput(provider: YagrModelProvider): boolean {
+export function providerNeedsBaseUrlInput(provider: AgentModelProvider): boolean {
     return provider === 'openai-compatible';
 }
 
-export function providerSupportsReasoningEffort(provider: YagrModelProvider, _model?: string): boolean {
-    return provider === 'openai-oauth';
+export function providerSupportsReasoningEffort(provider: AgentModelProvider, model?: string): boolean {
+    return getReasoningCapability(provider, model).supported;
 }
 
-export class YagrProviderService {
+export class AgentProviderService {
     constructor(private readonly context: vscode.ExtensionContext) {}
 
-    getDefinition(provider: string): YagrProviderDefinition {
-        return YAGR_PROVIDER_DEFINITIONS[normalizeYagrProviderId(provider) || 'openai'];
+    getDefinition(provider: string): AgentProviderDefinition {
+        return AGENT_PROVIDER_DEFINITIONS[normalizeAgentProviderId(provider) || 'openai'];
     }
 
-    async getStoredCredential(provider: YagrModelProvider): Promise<string | undefined> {
+    async getStoredCredential(provider: AgentModelProvider): Promise<string | undefined> {
         return this.context.secrets.get(getAgentProviderSecretKey(provider));
     }
 
-    async listProviderConnectionStates(): Promise<YagrProviderConnectionState[]> {
-        const config = vscode.workspace.getConfiguration('n8n.agent');
-        const selectedProvider = normalizeYagrProviderId(String(config.get<string>('provider') || 'openai')) || 'openai';
-        const selectedModel = String(config.get<string>('model') || '').trim() || undefined;
-        const configuredBaseUrl = String(config.get<string>('baseUrl') || '').trim() || undefined;
-        const selectedReasoningEffort = this.readReasoningEffort();
+    async listProviderConnectionStates(): Promise<AgentProviderConnectionState[]> {
+        const settings = readAgentProviderSettings(this.context.globalState);
+        const selectedProvider = settings.provider;
+        const selectedModel = settings.model;
+        const configuredBaseUrl = settings.baseUrl;
+        const selectedReasoningEffort = settings.reasoningEffort;
         const disabledProviders = this.getDisabledProviders();
-        const states = await Promise.all(YAGR_SELECTABLE_PROVIDERS.map(async (provider) => {
-            const definition = YAGR_PROVIDER_DEFINITIONS[provider];
+        const states = await Promise.all(AGENT_SELECTABLE_PROVIDERS.map(async (provider) => {
+            const definition = AGENT_PROVIDER_DEFINITIONS[provider];
             const hasStoredCredential = Boolean(await this.getStoredCredential(provider));
             const providerDisabled = disabledProviders.has(provider);
             const hasEnvironmentCredential = !providerDisabled && this.hasEnvironmentCredential(provider);
-            const connected = !providerDisabled && (hasStoredCredential || hasEnvironmentCredential || provider === selectedProvider);
+            const connected = !providerDisabled && (hasStoredCredential || hasEnvironmentCredential);
             return {
                 id: provider,
                 label: definition.label,
@@ -243,34 +255,36 @@ export class YagrProviderService {
         return states;
     }
 
-    async disconnectProvider(provider: YagrModelProvider): Promise<void> {
+    async disconnectProvider(provider: AgentModelProvider): Promise<void> {
         await this.context.secrets.delete(getAgentProviderSecretKey(provider));
         await this.setProviderDisabled(provider, true);
-        const config = vscode.workspace.getConfiguration('n8n.agent');
-        const selectedProvider = normalizeYagrProviderId(String(config.get<string>('provider') || ''));
+        const selectedProvider = readAgentProviderSettings(this.context.globalState).provider;
         if (selectedProvider === provider) {
-            await config.update('provider', 'openai', vscode.ConfigurationTarget.Global);
-            await config.update('model', YAGR_PROVIDER_DEFINITIONS.openai.defaultModel, vscode.ConfigurationTarget.Global);
-            await config.update('baseUrl', '', vscode.ConfigurationTarget.Global);
-            await config.update('reasoningEffort', undefined, vscode.ConfigurationTarget.Global);
+            await updateAgentProviderSettings(this.context.globalState, {
+                provider: 'openai',
+                model: AGENT_PROVIDER_DEFINITIONS.openai.defaultModel,
+                baseUrl: undefined,
+                reasoningEffort: undefined,
+            });
         }
     }
 
-    hasEnvironmentCredential(provider: YagrModelProvider): boolean {
-        return YAGR_PROVIDER_DEFINITIONS[provider].envKeys.some((key) => Boolean(process.env[key]?.trim()));
+    hasEnvironmentCredential(provider: AgentModelProvider): boolean {
+        return AGENT_PROVIDER_DEFINITIONS[provider].envKeys.some((key) => Boolean(process.env[key]?.trim()));
     }
 
-    async setupProvider(provider: YagrModelProvider): Promise<boolean> {
-        const definition = YAGR_PROVIDER_DEFINITIONS[provider];
-        const config = vscode.workspace.getConfiguration('n8n.agent');
-        const previousProvider = normalizeYagrProviderId(String(config.get<string>('provider') || ''));
+    async setupProvider(provider: AgentModelProvider): Promise<boolean> {
+        const definition = AGENT_PROVIDER_DEFINITIONS[provider];
+        const settings = readAgentProviderSettings(this.context.globalState);
+        const previousProvider = settings.provider;
         await this.setProviderDisabled(provider, false);
+        let nextBaseUrl: string | undefined;
 
         if (providerNeedsBaseUrlInput(provider)) {
             const baseUrl = await vscode.window.showInputBox({
                 title: 'OpenAI-compatible base URL',
                 prompt: 'Only OpenAI-compatible providers allow a custom base URL.',
-                value: String(config.get<string>('baseUrl') || ''),
+                value: settings.baseUrl || '',
                 ignoreFocusOut: true,
                 validateInput: (value) => {
                     if (!value.trim()) return 'Base URL is required for OpenAI-compatible providers.';
@@ -278,9 +292,7 @@ export class YagrProviderService {
                 },
             });
             if (baseUrl === undefined) return false;
-            await config.update('baseUrl', baseUrl.trim().replace(/\/$/, ''), vscode.ConfigurationTarget.Global);
-        } else {
-            await config.update('baseUrl', '', vscode.ConfigurationTarget.Global);
+            nextBaseUrl = baseUrl.trim().replace(/\/$/, '');
         }
 
         if (definition.authKind === 'api-key') {
@@ -310,19 +322,19 @@ export class YagrProviderService {
             await this.runDeviceFlow(provider);
         }
 
-        await config.update('provider', provider, vscode.ConfigurationTarget.Global);
-        const currentModel = String(config.get<string>('model') || '').trim();
-        if (!currentModel || previousProvider !== provider) {
-            await config.update('model', definition.defaultModel, vscode.ConfigurationTarget.Global);
-        }
+        const currentModel = settings.model;
+        await updateAgentProviderSettings(this.context.globalState, {
+            provider,
+            baseUrl: nextBaseUrl,
+            model: !currentModel || previousProvider !== provider ? definition.defaultModel : currentModel,
+        });
         return true;
     }
 
-    async selectModel(provider: YagrModelProvider): Promise<string | undefined> {
-        const definition = YAGR_PROVIDER_DEFINITIONS[provider];
+    async selectModel(provider: AgentModelProvider): Promise<string | undefined> {
+        const definition = AGENT_PROVIDER_DEFINITIONS[provider];
         const models = await this.fetchAvailableModels(provider).catch(() => []);
-        const config = vscode.workspace.getConfiguration('n8n.agent');
-        const currentModel = String(config.get<string>('model') || '').trim() || definition.defaultModel;
+        const currentModel = readAgentProviderSettings(this.context.globalState).model || definition.defaultModel;
         const items = [...new Set([...(models.length ? models : []), definition.defaultModel, currentModel].filter(Boolean))]
             .map((model) => ({ label: model, picked: model === currentModel }));
 
@@ -332,59 +344,58 @@ export class YagrProviderService {
             ignoreFocusOut: true,
         });
         if (!picked) return undefined;
-        await config.update('model', picked.label, vscode.ConfigurationTarget.Global);
+        await updateAgentProviderSettings(this.context.globalState, { provider, model: picked.label });
         await this.syncReasoningEffortConfiguration(provider, picked.label);
         return picked.label;
     }
 
-    async selectReasoningEffort(provider: YagrModelProvider, model?: string): Promise<YagrReasoningEffort | undefined> {
+    async selectReasoningEffort(provider: AgentModelProvider, model?: string): Promise<AgentProviderReasoningEffort | undefined> {
         if (!providerSupportsReasoningEffort(provider, model)) {
-            const config = vscode.workspace.getConfiguration('n8n.agent');
-            await config.update('reasoningEffort', undefined, vscode.ConfigurationTarget.Global);
+            await updateAgentProviderSettings(this.context.globalState, { reasoningEffort: undefined });
             return undefined;
         }
 
-        const config = vscode.workspace.getConfiguration('n8n.agent');
-        const defaultReasoningEffort = await this.getDefaultReasoningEffort(model || String(config.get<string>('model') || '').trim());
-        const current = this.readReasoningEffort() || defaultReasoningEffort;
+        const settings = readAgentProviderSettings(this.context.globalState);
+        const capability = getReasoningCapability(provider, model || settings.model || '');
+        const defaultReasoningEffort = this.getDefaultReasoningEffort(provider, model || settings.model || '');
+        const current = normalizeReasoningEffortForCapability(settings.reasoningEffort, capability) || defaultReasoningEffort;
         const picked = await vscode.window.showQuickPick(
-            YAGR_REASONING_EFFORTS.map((effort) => ({
+            capability.efforts.map((effort) => ({
                 label: effort,
                 picked: effort === current,
-                description: effort === defaultReasoningEffort ? 'Yagr default' : undefined,
+                description: effort === defaultReasoningEffort ? 'Provider default' : undefined,
             })),
             {
                 title: 'Select reasoning effort',
-                placeHolder: 'Controls how much reasoning budget eligible OpenAI account models can use.',
+                placeHolder: 'Controls provider-specific reasoning or thinking budget when supported.',
                 ignoreFocusOut: true,
             },
         );
         if (!picked) return current;
-        await config.update('reasoningEffort', picked.label as YagrReasoningEffort, vscode.ConfigurationTarget.Global);
-        return picked.label as YagrReasoningEffort;
+        await updateAgentProviderSettings(this.context.globalState, { reasoningEffort: picked.label as AgentProviderReasoningEffort });
+        return picked.label as AgentProviderReasoningEffort;
     }
 
-    async syncReasoningEffortConfiguration(provider: YagrModelProvider, model?: string): Promise<YagrReasoningEffort | undefined> {
+    async syncReasoningEffortConfiguration(provider: AgentModelProvider, model?: string): Promise<AgentProviderReasoningEffort | undefined> {
         if (!providerSupportsReasoningEffort(provider, model)) {
-            const config = vscode.workspace.getConfiguration('n8n.agent');
-            await config.update('reasoningEffort', undefined, vscode.ConfigurationTarget.Global);
+            await updateAgentProviderSettings(this.context.globalState, { reasoningEffort: undefined });
             return undefined;
         }
 
-        const config = vscode.workspace.getConfiguration('n8n.agent');
-        const current = this.readReasoningEffort();
-        const defaultReasoningEffort = await this.getDefaultReasoningEffort(model || String(config.get<string>('model') || '').trim());
+        const settings = readAgentProviderSettings(this.context.globalState);
+        const capability = getReasoningCapability(provider, model || settings.model || '');
+        const current = normalizeReasoningEffortForCapability(settings.reasoningEffort, capability);
+        const defaultReasoningEffort = this.getDefaultReasoningEffort(provider, model || settings.model || '');
         const next = current || defaultReasoningEffort;
-        await config.update('reasoningEffort', next, vscode.ConfigurationTarget.Global);
+        await updateAgentProviderSettings(this.context.globalState, { reasoningEffort: next });
         return next;
     }
 
-    async fetchAvailableModels(provider: YagrModelProvider): Promise<string[]> {
-        const definition = YAGR_PROVIDER_DEFINITIONS[provider];
+    async fetchAvailableModels(provider: AgentModelProvider): Promise<string[]> {
+        const definition = AGENT_PROVIDER_DEFINITIONS[provider];
         if (!definition.canDiscoverModels) return [];
         const apiKey = await this.getStoredCredential(provider) || this.readEnvironmentCredential(provider);
-        const config = vscode.workspace.getConfiguration('n8n.agent');
-        const configuredBaseUrl = String(config.get<string>('baseUrl') || '').trim();
+        const configuredBaseUrl = readAgentProviderSettings(this.context.globalState).baseUrl || '';
         const baseUrl = provider === 'openai-compatible' ? configuredBaseUrl : definition.defaultBaseUrl;
 
         if ((definition.requiresApiKey || provider !== 'openai-compatible') && !apiKey && definition.authKind !== 'none') {
@@ -403,12 +414,10 @@ export class YagrProviderService {
             return this.fetchOpenAiOauthModels(apiKey || '');
         }
         if (provider === 'copilot-proxy') {
-            return this.fetchJsonModels(`${definition.defaultBaseUrl}/models`, {
-                Authorization: `Bearer ${apiKey}`,
-                'User-Agent': 'GitHubCopilotChat/0.26.7',
-                'Editor-Version': 'vscode/1.96.2',
-                'Editor-Plugin-Version': 'copilot-chat/0.26.7',
-            });
+            return fetchGitHubCopilotModels(apiKey || '');
+        }
+        if (provider === 'minimax' || provider === 'minimax-token-plan') {
+            return this.probeMiniMaxModels(apiKey || '', baseUrl || definition.defaultBaseUrl);
         }
 
         const modelsUrl = provider === 'openai-compatible'
@@ -418,21 +427,56 @@ export class YagrProviderService {
         return this.fetchJsonModels(modelsUrl, apiKey ? { Authorization: `Bearer ${apiKey}` } : {});
     }
 
-    private readEnvironmentCredential(provider: YagrModelProvider): string | undefined {
+    private readEnvironmentCredential(provider: AgentModelProvider): string | undefined {
         if (this.getDisabledProviders().has(provider)) return undefined;
-        for (const key of YAGR_PROVIDER_DEFINITIONS[provider].envKeys) {
+        for (const key of AGENT_PROVIDER_DEFINITIONS[provider].envKeys) {
             const value = process.env[key]?.trim();
             if (value) return value;
         }
         return undefined;
     }
 
-    private getDisabledProviders(): Set<YagrModelProvider> {
-        const disabled = this.context.globalState.get<string[]>(DISABLED_PROVIDERS_STATE_KEY, []);
-        return new Set(disabled.map((provider) => normalizeYagrProviderId(provider)).filter((provider): provider is YagrModelProvider => Boolean(provider)));
+    private async probeMiniMaxModels(apiKey: string, baseUrl?: string): Promise<string[]> {
+        if (!apiKey) return [];
+        const url = this.getMiniMaxCompletionDiscoveryUrl(baseUrl);
+        const checks = await Promise.all(
+            MINIMAX_DISCOVERY_CANDIDATE_MODELS.map(async (model) => {
+                try {
+                    const response = await fetch(url, {
+                        method: 'POST',
+                        headers: {
+                            Authorization: `Bearer ${apiKey}`,
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({
+                            model,
+                            messages: [{ role: 'user', content: 'ping' }],
+                            max_tokens: 1,
+                        }),
+                    });
+                    return response.ok ? model : undefined;
+                } catch {
+                    return undefined;
+                }
+            }),
+        );
+        return checks.filter((model): model is typeof MINIMAX_DISCOVERY_CANDIDATE_MODELS[number] => Boolean(model));
     }
 
-    private async setProviderDisabled(provider: YagrModelProvider, disabled: boolean): Promise<void> {
+    private getMiniMaxCompletionDiscoveryUrl(baseUrl?: string): string {
+        const resolvedBaseUrl = baseUrl || AGENT_PROVIDER_DEFINITIONS.minimax.defaultBaseUrl || 'https://api.minimax.io/anthropic';
+        if (resolvedBaseUrl.endsWith('/anthropic')) {
+            return resolvedBaseUrl.replace(/\/anthropic\/?$/, '/v1/chat/completions');
+        }
+        return `${resolvedBaseUrl.replace(/\/$/, '')}/v1/chat/completions`;
+    }
+
+    private getDisabledProviders(): Set<AgentModelProvider> {
+        const disabled = this.context.globalState.get<string[]>(DISABLED_PROVIDERS_STATE_KEY, []);
+        return new Set(disabled.map((provider) => normalizeAgentProviderId(provider)).filter((provider): provider is AgentModelProvider => Boolean(provider)));
+    }
+
+    private async setProviderDisabled(provider: AgentModelProvider, disabled: boolean): Promise<void> {
         const providers = this.getDisabledProviders();
         if (disabled) {
             providers.add(provider);
@@ -449,15 +493,10 @@ export class YagrProviderService {
         return [...new Set(MODEL_LIST_MAPPER(payload))];
     }
 
-    private readReasoningEffort(): YagrReasoningEffort | undefined {
-        const config = vscode.workspace.getConfiguration('n8n.agent');
-        const value = String(config.get<string>('reasoningEffort') || '').trim();
-        return YAGR_REASONING_EFFORTS.includes(value as YagrReasoningEffort) ? value as YagrReasoningEffort : undefined;
-    }
-
-    private async getDefaultReasoningEffort(model: string): Promise<YagrReasoningEffort> {
-        const modelId = model || YAGR_PROVIDER_DEFINITIONS['openai-oauth'].defaultModel;
-        return modelId.includes('codex-mini') ? 'minimal' : 'medium';
+    private getDefaultReasoningEffort(provider: AgentModelProvider, model: string): AgentProviderReasoningEffort {
+        const capability = getReasoningCapability(provider, model || AGENT_PROVIDER_DEFINITIONS[provider].defaultModel);
+        if (provider === 'openai-oauth' && model.includes('codex-mini')) return 'minimal';
+        return capability.defaultEffort || 'medium';
     }
 
     private async fetchOpenAiOauthModels(accessToken: string): Promise<string[]> {
@@ -492,7 +531,7 @@ export class YagrProviderService {
         }
     }
 
-    private async runDeviceFlow(provider: YagrModelProvider): Promise<void> {
+    private async runDeviceFlow(provider: AgentModelProvider): Promise<void> {
         const challenge = provider === 'openai-oauth'
             ? await this.beginOpenAiDeviceAuth()
             : await this.beginGitHubDeviceAuth();
@@ -518,21 +557,21 @@ export class YagrProviderService {
             });
 
             await this.context.secrets.store(getAgentProviderSecretKey(provider), token);
-            vscode.window.showInformationMessage(`${YAGR_PROVIDER_DEFINITIONS[provider].label} connected.`);
+            vscode.window.showInformationMessage(`${AGENT_PROVIDER_DEFINITIONS[provider].label} connected.`);
         } finally {
             authPanel.dispose();
             cancellationSource.dispose();
         }
     }
 
-    private showDeviceFlowModal(provider: YagrModelProvider, challenge: DeviceChallenge, cancellationSource: vscode.CancellationTokenSource): vscode.WebviewPanel {
+    private showDeviceFlowModal(provider: AgentModelProvider, challenge: DeviceChallenge, cancellationSource: vscode.CancellationTokenSource): vscode.WebviewPanel {
         const title = provider === 'openai-oauth' ? 'Connect OpenAI account' : 'Connect GitHub Copilot';
         void vscode.env.clipboard.writeText(challenge.userCode).then(undefined, () => undefined);
         void vscode.env.openExternal(vscode.Uri.parse(challenge.verificationUri));
         return this.showDeviceFlowWebview(title, provider, challenge, cancellationSource);
     }
 
-    private showDeviceFlowWebview(title: string, provider: YagrModelProvider, challenge: DeviceChallenge, cancellationSource: vscode.CancellationTokenSource): vscode.WebviewPanel {
+    private showDeviceFlowWebview(title: string, provider: AgentModelProvider, challenge: DeviceChallenge, cancellationSource: vscode.CancellationTokenSource): vscode.WebviewPanel {
         const panel = vscode.window.createWebviewPanel(
             'n8nAgentDeviceAuth',
             title,
@@ -562,9 +601,9 @@ export class YagrProviderService {
         return panel;
     }
 
-    private buildDeviceFlowHtml(title: string, provider: YagrModelProvider, challenge: DeviceChallenge): string {
+    private buildDeviceFlowHtml(title: string, provider: AgentModelProvider, challenge: DeviceChallenge): string {
         const nonce = this.getNonce();
-        const providerLabel = this.escapeHtml(YAGR_PROVIDER_DEFINITIONS[provider].label);
+        const providerLabel = this.escapeHtml(AGENT_PROVIDER_DEFINITIONS[provider].label);
         const safeTitle = this.escapeHtml(title);
         const code = this.escapeHtml(challenge.userCode);
         const verificationUri = this.escapeHtml(challenge.verificationUri);

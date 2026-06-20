@@ -87,6 +87,7 @@ const packageJson = JSON.parse(fs.readFileSync(path.join(extensionSrcDir, 'packa
 const extensionBaseId = `etienne-lescot.${packageJson.name}`;
 const extensionId = `etienne-lescot.${packageJson.name}-${packageJson.version}`;
 const targetLinkPath = path.join(extensionsDir, extensionId);
+const workspaceLaunchPath = path.join(rootDir, '.vscode', 'launch.json');
 
 console.log(`🔗 Setting up dev link for ${extensionId}...`);
 
@@ -129,24 +130,66 @@ try {
 //    window uses `packages/vscode-extension` as its extensionDevelopmentPath,
 //    not the monorepo root (which lacks an `engines` field and causes the
 //    "property `engines` is mandatory" error on startup).
-const vscodeStoragePath = path.join(homeDir, '.config', 'Code', 'User', 'globalStorage', 'storage.json');
+function getVsCodeStorageCandidates(homePath) {
+    const candidates = [];
+    if (process.env.VSCODE_PORTABLE) {
+        candidates.push(path.join(process.env.VSCODE_PORTABLE, 'user-data', 'User', 'globalStorage', 'storage.json'));
+    }
+    if (process.platform === 'darwin') {
+        candidates.push(path.join(homePath, 'Library', 'Application Support', 'Code', 'User', 'globalStorage', 'storage.json'));
+        candidates.push(path.join(homePath, 'Library', 'Application Support', 'Code - Insiders', 'User', 'globalStorage', 'storage.json'));
+    }
+    if (process.platform === 'win32' && process.env.APPDATA) {
+        candidates.push(path.join(process.env.APPDATA, 'Code', 'User', 'globalStorage', 'storage.json'));
+        candidates.push(path.join(process.env.APPDATA, 'Code - Insiders', 'User', 'globalStorage', 'storage.json'));
+    }
+    candidates.push(path.join(homePath, '.config', 'Code', 'User', 'globalStorage', 'storage.json'));
+    candidates.push(path.join(homePath, '.config', 'Code - Insiders', 'User', 'globalStorage', 'storage.json'));
+    return [...new Set(candidates)];
+}
+
+const vscodeStoragePaths = getVsCodeStorageCandidates(homeDir);
 try {
-    if (fs.existsSync(vscodeStoragePath)) {
+    for (const vscodeStoragePath of vscodeStoragePaths) {
+        if (!fs.existsSync(vscodeStoragePath)) continue;
         const storageData = JSON.parse(fs.readFileSync(vscodeStoragePath, 'utf8'));
         const windowsState = storageData.windowsState || {};
         // Create or update the entry — don't require it to pre-exist
         windowsState.lastPluginDevelopmentHostWindow = windowsState.lastPluginDevelopmentHostWindow || {};
         windowsState.lastPluginDevelopmentHostWindow.extensionDevelopmentPath = [extensionSrcDir];
-        // Keep the folder pointing to the n8n-workflows workspace if set, otherwise leave it
-        if (!windowsState.lastPluginDevelopmentHostWindow.folder) {
-            windowsState.lastPluginDevelopmentHostWindow.folder = 'file:///home/etienne/Documents/repos/n8n-workflows';
-        }
         storageData.windowsState = windowsState;
         fs.writeFileSync(vscodeStoragePath, JSON.stringify(storageData, null, 2), 'utf8');
         console.log(`🔧 Fixed VS Code extensionDevelopmentPath → ${extensionSrcDir}`);
     }
 } catch (err) {
     console.warn(`⚠️  Could not update VS Code storage.json: ${err.message}`);
+}
+
+// 4. The repo root is a monorepo package and is not itself a VS Code extension.
+//    Create an ignored local launch config so pressing F5 from the root uses the
+//    real extension package instead of `${workspaceFolder}`.
+try {
+    fs.mkdirSync(path.dirname(workspaceLaunchPath), { recursive: true });
+    const launchConfig = {
+        version: '0.2.0',
+        configurations: [
+            {
+                name: 'Run n8n-as-code Extension',
+                type: 'extensionHost',
+                request: 'launch',
+                args: [
+                    '--extensionDevelopmentPath=${workspaceFolder}/packages/vscode-extension',
+                ],
+                outFiles: [
+                    '${workspaceFolder}/packages/vscode-extension/out/**/*.js',
+                ],
+            },
+        ],
+    };
+    fs.writeFileSync(workspaceLaunchPath, `${JSON.stringify(launchConfig, null, 2)}\n`, 'utf8');
+    console.log(`🔧 Wrote VS Code launch config → ${workspaceLaunchPath}`);
+} catch (err) {
+    console.warn(`⚠️  Could not write VS Code launch config: ${err.message}`);
 }
 
 console.log(`\n🚀 NEW WORKFLOW:`);

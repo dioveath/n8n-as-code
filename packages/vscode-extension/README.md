@@ -2,11 +2,9 @@
 
 The VS Code and Cursor workspace for building n8n workflows with an AI agent that has live n8n context.
 
-The extension centers on **workspace environments**: a workspace environment points to a remote n8n URL or local managed instance, a project, and a sync folder. Local Docker instances and tunnels are managed separately through `n8n-manager`.
+The extension centers on **workspace environments**: a workspace environment points to a remote n8n URL or local managed instance, a project, and a workflows path. Local Docker instances and tunnels are managed separately through `n8n-manager`.
 
 Published for both the Microsoft Marketplace and Open VSX.
-
-> **Using V1?** The Marketplace and Open VSX listings follow the V2+ release line. V1 users must install the legacy VSIX manually from the [v1.46.1-legacy GitHub release](https://github.com/EtienneLescot/n8n-as-code/releases/tag/v1.46.1-legacy) and disable extension auto-updates.
 
 ![n8n-as-code demo](https://raw.githubusercontent.com/EtienneLescot/n8n-as-code/main/res/n8n-as-code.gif)
 
@@ -49,7 +47,7 @@ The Agent can use:
 - current workflow file and workflow metadata
 - selected node or canvas context
 - active n8n environment
-- project and sync folder
+- project and workflowsPath
 - generated `AGENTS.md`
 - bundled n8n schemas, docs, examples, templates, and validation rules
 
@@ -64,25 +62,10 @@ The Agent can use:
 
 The extension can surface local managed instances through `n8n-manager`. These are machine-local resources. Adding or removing an environment does not create or delete a Docker instance unless you explicitly use the local instance controls.
 
-## Workspace Migration
-
-The extension detects old config models but does not rewrite them automatically when a workspace opens.
-
-Use explicit actions:
-
-```bash
-n8nac workspace migrate --json
-n8nac workspace migrate --write
-```
-
-- `migrate --json` is the dry-run for legacy config models and reports one unified `operations` list.
-- `migrate --write` applies the required migration as one operation.
-- The write step creates a backup before writing.
-
 ## CLI Equivalent
 
 ```bash
-n8nac env add Dev --base-url <url> --sync-folder workflows/dev
+n8nac env add Dev --base-url <url> --workflows-path workflows/dev
 n8nac env auth set Dev --api-key-stdin
 n8nac env use Dev
 n8nac list
@@ -94,7 +77,7 @@ For a local managed instance:
 
 ```bash
 n8n-manager instance list
-n8nac env add Local --managed-instance <id> --sync-folder workflows/local
+n8nac env add Local --managed-instance <id> --workflows-path workflows/local
 ```
 
 ## V1 Legacy Extension

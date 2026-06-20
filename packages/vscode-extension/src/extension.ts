@@ -8,7 +8,8 @@ declare const __N8NAC_VERSION__: string;
 declare const __N8NAC_CLI_SEMVER__: string;
 import {
     SyncManager, CliApi, N8nApiClient, IN8nCredentials, WorkflowSyncStatus, ConfigService,
-    resolveInstanceIdentifier, isCanonicalUserInstanceIdentifier, SYNC_EVENT_JOURNAL_FILENAME, type SyncEvent
+    resolveInstanceIdentifier, isCanonicalUserInstanceIdentifier, SYNC_EVENT_JOURNAL_FILENAME, type SyncEvent,
+    type ITestPlan, type IWorkflowStatus,
 } from 'n8nac';
 import { AiContextGenerator, getN8nacDevConfigFilenames } from '@n8n-as-code/skills';
 
@@ -22,22 +23,23 @@ import { WorkflowDecorationProvider } from './ui/workflow-decoration-provider.js
 import { ProxyService } from './services/proxy-service.js';
 import { AgentRuntimeController } from './services/agent-runtime-controller.js';
 import type { AgentWorkflowContext } from './services/agent-runtime-controller.js';
+import { WorktreeService, type WorktreeInfo } from './services/worktree-service.js';
 import {
-    YagrProviderService,
-    YAGR_PROVIDER_DEFINITIONS,
-    YAGR_REASONING_EFFORTS,
-    YAGR_SELECTABLE_PROVIDERS,
-    normalizeYagrProviderId,
+    AgentProviderService,
+    AGENT_PROVIDER_DEFINITIONS,
+    AGENT_REASONING_EFFORTS,
+    AGENT_SELECTABLE_PROVIDERS,
+    normalizeAgentProviderId,
     providerSupportsReasoningEffort,
-    type YagrModelProvider,
-    type YagrReasoningEffort,
-} from './services/yagr-provider-service.js';
+    type AgentModelProvider,
+    type AgentProviderReasoningEffort,
+} from './services/agent-provider-service.js';
+import { readAgentProviderSettings, updateAgentProviderSettings } from './services/agent-provider-settings.js';
 import {
     N8nConfigurationController,
     type N8nConfigurationChangeEvent,
     type N8nConfigurationSnapshot,
 } from './services/n8n-configuration-controller.js';
-import { runWorkspaceMigrationFromVscode } from './services/workspace-migration-runner.js';
 import { workflowWebviewRegistry } from './services/workflow-webview-registry.js';
 import { createN8nManagerFacade } from '@n8n-as-code/manager-adapter';
 import { createTelemetryClient, type TelemetryClient } from '@n8n-as-code/telemetry';
@@ -48,7 +50,7 @@ import { buildWorkflowQuickPickItems } from './utils/workflow-finder.js';
 import { isClipboardBridgeRequired } from './utils/clipboard-utils.js';
 import { getCanonicalProjectName, getProjectDetail, getProjectDisplayLabel } from './utils/project-display.js';
 import { shouldAutoEnsureAiContext } from './utils/ai-context-policy.js';
-import { IWorkflowStatus } from 'n8nac';
+import { createWorkflowWebviewContext, type WorkflowWebviewContext } from './services/workflow-webview-context.js';
 
 import {
     store,
@@ -103,12 +105,14 @@ let initializingPromise: Promise<void> | undefined;
 let runtimeDisposables: vscode.Disposable[] = [];
 let configurationController: N8nConfigurationController | undefined;
 let agentRuntimeController: AgentRuntimeController | undefined;
-let yagrProviderService: YagrProviderService | undefined;
+let agentProviderService: AgentProviderService | undefined;
+let worktreeService: WorktreeService | undefined;
 let suppressNextConfigurationReaction = false;
 let failedAutoInitRuntimeSignature: string | undefined;
 let failedAutoInitConnectionKey: string | undefined;
 let aiContextFreshnessTimer: NodeJS.Timeout | undefined;
 let aiContextFreshnessInFlight: Promise<void> | undefined;
+let extensionContextForAgentSettings: vscode.ExtensionContext | undefined;
 
 const statusBar = new StatusBar();
 const proxyService = new ProxyService();
@@ -121,6 +125,7 @@ let telemetryClient: TelemetryClient | undefined;
 
 const conflictStore = new Map<string, string>();
 const processedSyncEventIds = new Set<string>();
+const syncEventJournalSignatures = new Map<string, string>();
 
 const AI_CONTEXT_METADATA_RELATIVE_PATH = path.join('.n8nac', 'ai-context.json');
 const AI_CONTEXT_SIGNATURE_SCHEMA_VERSION = 1;
@@ -136,12 +141,19 @@ type AiContextMetadata = {
 
 async function processSyncEventJournal(journalUri: vscode.Uri, source: string, markOnly = false): Promise<void> {
     if (!fs.existsSync(journalUri.fsPath)) return;
+    const signature = getFileChangeSignature(journalUri.fsPath);
+    if (!markOnly && signature && syncEventJournalSignatures.get(journalUri.fsPath) === signature) {
+        return;
+    }
     let raw: Uint8Array;
     try {
         raw = await vscode.workspace.fs.readFile(journalUri);
     } catch (err) {
         console.error('[n8n] Failed to read sync event journal', err);
         return;
+    }
+    if (signature) {
+        syncEventJournalSignatures.set(journalUri.fsPath, signature);
     }
 
     const lines = Buffer.from(raw).toString('utf8').split('\n').filter(Boolean);
@@ -168,6 +180,15 @@ async function processSyncEventJournal(journalUri: vscode.Uri, source: string, m
         }
         const reloaded = workflowWebviewRegistry.reloadIfMatching(event.workflowId);
         outputChannel.appendLine(`[n8n-agent-debug] ${source} push success workflowId=${event.workflowId} filename=${event.filename || 'none'} reloaded=${reloaded}`);
+    }
+}
+
+function getFileChangeSignature(filePath: string): string | undefined {
+    try {
+        const stat = fs.statSync(filePath);
+        return `${stat.mtimeMs}:${stat.size}`;
+    } catch {
+        return undefined;
     }
 }
 
@@ -219,26 +240,13 @@ async function refreshWorkflowList(): Promise<IWorkflowStatus[]> {
 }
 
 export async function activate(context: vscode.ExtensionContext) {
-    outputChannel.show(true);
-    outputChannel.appendLine('🔌 Activation of "n8n-as-code"...');
-    telemetryClient = createTelemetryClient({
-        facade: 'vscode',
-        version: String(context.extension.packageJSON?.version ?? __N8NAC_CLI_SEMVER__ ?? ''),
-        forceDisabled: !vscode.env.isTelemetryEnabled,
-    });
-    telemetryClient.track('vscode_extension_activated', {
-        vscode_version: vscode.version,
-        extension_version: String(context.extension.packageJSON?.version ?? ''),
-        has_workspace: Boolean(vscode.workspace.workspaceFolders?.length),
-    });
-    context.subscriptions.push(vscode.env.onDidChangeTelemetryEnabled((enabled) => {
-        telemetryClient = createTelemetryClient({
-            facade: 'vscode',
-            version: String(context.extension.packageJSON?.version ?? __N8NAC_CLI_SEMVER__ ?? ''),
-            forceDisabled: !enabled,
-        });
-    }));
-
+    extensionContextForAgentSettings = context;
+    try {
+        outputChannel.show(true);
+        outputChannel.appendLine('🔌 Activation of "n8n-as-code"...');
+    } catch {
+        // Keep activation moving so command registration still happens in Cursor-compatible hosts.
+    }
     const registerTelemetryCommand = (command: string, callback: (...args: any[]) => any): vscode.Disposable => (
         vscode.commands.registerCommand(command, async (...args: any[]) => {
             const telemetry = telemetryClient;
@@ -256,6 +264,55 @@ export async function activate(context: vscode.ExtensionContext) {
         })
     );
 
+    context.subscriptions.push(
+        registerTelemetryCommand('n8n.configure', async (initialTab?: string) => {
+            ConfigurationWebview.createOrShow(
+                context,
+                getOrCreateConfigurationController(),
+                typeof initialTab === 'string' ? initialTab : undefined,
+            );
+        }),
+    );
+
+    try {
+        const controller = getOrCreateConfigurationController();
+        context.subscriptions.push(
+            controller,
+            controller.onDidChangeSnapshot((event) => {
+                const workspaceRoot = getWorkspaceRoot();
+                if (shouldAutoEnsureAiContext({ workspaceRoot, snapshot: event.snapshot })) {
+                    scheduleEnsureAiContextFresh(context, `snapshot:${event.reason}`, event.snapshot);
+                }
+                void handleConfigurationSnapshotChanged(context, event);
+            }),
+        );
+    } catch (error: any) {
+        outputChannel.appendLine(`[n8n] Configuration controller initialization failed: ${error?.message || error}`);
+    }
+
+    try {
+        telemetryClient = createTelemetryClient({
+            facade: 'vscode',
+            version: String(context.extension.packageJSON?.version ?? __N8NAC_CLI_SEMVER__ ?? ''),
+            forceDisabled: !vscode.env.isTelemetryEnabled,
+        });
+        telemetryClient.track('vscode_extension_activated', {
+            vscode_version: vscode.version,
+            extension_version: String(context.extension.packageJSON?.version ?? ''),
+            has_workspace: Boolean(vscode.workspace.workspaceFolders?.length),
+        });
+        context.subscriptions.push(vscode.env.onDidChangeTelemetryEnabled((enabled) => {
+            telemetryClient = createTelemetryClient({
+                facade: 'vscode',
+                version: String(context.extension.packageJSON?.version ?? __N8NAC_CLI_SEMVER__ ?? ''),
+                forceDisabled: !enabled,
+            });
+        }));
+    } catch (error: any) {
+        outputChannel.appendLine(`[n8n] Telemetry initialization skipped: ${error?.message || error}`);
+    }
+
+    try {
     // Register Remote Content Provider for Diffs
     context.subscriptions.push(
         vscode.workspace.registerTextDocumentContentProvider('n8n-remote', {
@@ -278,19 +335,8 @@ export async function activate(context: vscode.ExtensionContext) {
     proxyService.setOutputChannel(outputChannel);
     proxyService.setSecrets(context.secrets);
     agentRuntimeController = new AgentRuntimeController(context, outputChannel);
-    yagrProviderService = new YagrProviderService(context);
+    agentProviderService = new AgentProviderService(context);
     context.subscriptions.push(agentRuntimeController);
-    configurationController = new N8nConfigurationController(outputChannel);
-    context.subscriptions.push(
-        configurationController,
-        configurationController.onDidChangeSnapshot((event) => {
-            const workspaceRoot = getWorkspaceRoot();
-            if (shouldAutoEnsureAiContext({ workspaceRoot, snapshot: event.snapshot })) {
-                scheduleEnsureAiContextFresh(context, `snapshot:${event.reason}`, event.snapshot);
-            }
-            void handleConfigurationSnapshotChanged(context, event);
-        }),
-    );
 
     // ── Register Commands ──────────────────────────────────────────────────────
     // Commands are registered early so they are available during activation.
@@ -299,34 +345,6 @@ export async function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
         registerTelemetryCommand('n8n.init', async () => {
             await handleInitializeCommand(context);
-        }),
-
-        registerTelemetryCommand('n8n.configure', async () => {
-            ConfigurationWebview.createOrShow(context, requireConfigurationController());
-        }),
-
-        registerTelemetryCommand('n8n.migrateWorkspaceConfiguration', async () => {
-            await migrateWorkspaceConfiguration(context);
-        }),
-
-        registerTelemetryCommand('n8n.migrateLegacyWorkspace', async () => {
-            await migrateWorkspaceConfiguration(context);
-        }),
-
-        registerTelemetryCommand('n8n.migrateGlobalInstancesToEnvironments', async () => {
-            await migrateWorkspaceConfiguration(context);
-        }),
-
-        registerTelemetryCommand('n8n.switchInstance', async (args?: SwitchInstanceCommandArgs) => {
-            await switchWorkspaceInstance(context, args);
-        }),
-
-        registerTelemetryCommand('n8n.pinWorkspaceInstance', async (args?: SwitchInstanceCommandArgs) => {
-            await pinWorkspaceInstance(context, args);
-        }),
-
-        registerTelemetryCommand('n8n.clearWorkspaceInstance', async () => {
-            await clearWorkspaceInstancePin(context);
         }),
 
         registerTelemetryCommand('n8n.deleteInstance', async (args?: DeleteInstanceCommandArgs) => {
@@ -399,6 +417,11 @@ export async function activate(context: vscode.ExtensionContext) {
 
         registerTelemetryCommand('n8n.openAgentWorkbench', async (arg: any) => {
             const runtime = requireAgentRuntimeController();
+            if (arg && typeof arg === 'object' && typeof arg.sessionId === 'string') {
+                telemetryClient?.track('vscode_workflow_view_opened', { mode: 'agent-workbench', workflow_state: arg.workflow ? 'workflow-context' : 'existing-session' });
+                await openAgentWorkbench(context, arg.workflow, arg.sessionId);
+                return;
+            }
             const wf = findWorkflowByCommandArg(arg);
             if (wf) {
                 const sessionId = await getOrCreateAgentSessionForWorkflow(wf);
@@ -646,8 +669,8 @@ export async function activate(context: vscode.ExtensionContext) {
             await setAgentProviderApiKey(context);
         }),
 
-        registerTelemetryCommand('n8n.openSettings', () => {
-            vscode.commands.executeCommand('workbench.action.openSettings', 'n8n');
+        registerTelemetryCommand('n8n.openSettings', async () => {
+            await vscode.commands.executeCommand('n8n.configure');
         }),
 
         registerTelemetryCommand('n8n.resolveConflict', async (arg: any) => {
@@ -705,44 +728,12 @@ export async function activate(context: vscode.ExtensionContext) {
     );
 
     // ── Backend configuration snapshot initialization ────────────────────────
-    configurationController.start();
+    getOrCreateConfigurationController().start();
 
-    // ── Settings change listener ───────────────────────────────────────────
-    context.subscriptions.push(
-        vscode.workspace.onDidChangeConfiguration(async e => {
-            const suppressOnce = context.workspaceState.get<boolean>('n8n.suppressSettingsChangedOnce');
-            if (suppressOnce) {
-                await context.workspaceState.update('n8n.suppressSettingsChangedOnce', false);
-                return;
-            }
-            if (
-                e.affectsConfiguration('n8n.host') ||
-                e.affectsConfiguration('n8n.apiKey') ||
-                e.affectsConfiguration('n8n.syncFolder') ||
-                e.affectsConfiguration('n8n.projectId') ||
-                e.affectsConfiguration('n8n.projectName')
-            ) {
-                outputChannel.appendLine('[n8n] Critical settings changed. Pausing until applied.');
-                if (syncManager) {
-                    enhancedTreeProvider.setExtensionState(ExtensionState.SETTINGS_CHANGED);
-                    statusBar.showSettingsChanged();
-                } else {
-                    const root = getWorkspaceRoot();
-                    const hasUnifiedConfig = root ? fs.existsSync(path.join(root, 'n8nac-config.json')) : false;
-                    const valid = validateN8nConfig().isValid;
-                    if (!hasUnifiedConfig || !valid) {
-                        resetExtensionRuntimeState();
-                        enhancedTreeProvider.setExtensionState(ExtensionState.CONFIGURING);
-                        statusBar.showConfiguring();
-                    } else {
-                        enhancedTreeProvider.setExtensionState(ExtensionState.UNINITIALIZED);
-                        statusBar.showNotInitialized();
-                    }
-                }
-                updateContextKeys();
-            }
-        })
-    );
+    } catch (error: any) {
+        outputChannel.appendLine(`[n8n] Activation completed with degraded functionality: ${error?.stack || error?.message || error}`);
+        vscode.window.showErrorMessage(`n8n as code activation issue: ${error?.message || error}`);
+    }
 }
 
 function getExistingWorkflowFileUri(workflow: IWorkflowStatus): vscode.Uri | undefined {
@@ -847,11 +838,45 @@ async function openWorkflowBoard(workflow: IWorkflowStatus, viewColumn?: vscode.
     }
 
     try {
-        const openTarget = await resolveWorkflowWebviewTarget(workflow);
-        WorkflowWebview.createOrShow(workflow, openTarget.url, viewColumn);
+        const webviewContext = await resolveWorkflowWebviewContext(workflow);
+        if (!webviewContext.workflowUrl) throw new Error(`Workflow "${workflow.name}" does not have a webview URL.`);
+        WorkflowWebview.createOrShow(webviewContext.workflow, webviewContext.workflowUrl, viewColumn, webviewContext.endpoints);
         registerClipboardHandler();
     } catch (e: any) {
         vscode.window.showErrorMessage(`Failed to open n8n workflow: ${e.message}`);
+    }
+}
+
+async function resolveWorkflowWebviewContext(workflow: IWorkflowStatus, workflowFilePath?: string): Promise<WorkflowWebviewContext> {
+    const [openTarget, testPlan] = await Promise.all([
+        resolveWorkflowWebviewTarget(workflow),
+        resolveWorkflowTestPlan(workflow),
+    ]);
+    return createWorkflowWebviewContext({
+        workflow,
+        workflowFilePath,
+        workflowUrl: openTarget.url,
+        workflowReloadUrl: openTarget.targetUrl,
+        testPlan,
+    });
+}
+
+async function resolveWorkflowTestPlan(workflow: IWorkflowStatus): Promise<ITestPlan | undefined> {
+    if (!workflow.id) return undefined;
+    const credentials = getN8nConfig();
+    if (!credentials.host || !credentials.apiKey) return undefined;
+
+    try {
+        const client = new N8nApiClient(credentials);
+        const plan = await client.getTestPlan(workflow.id);
+        const triggerType = plan.triggerInfo?.type || 'unknown';
+        if (plan.endpoints.testUrl) {
+            outputChannel.appendLine(`[n8n] ${triggerType} trigger test URL prepared for workflow ${workflow.id}.`);
+        }
+        return plan;
+    } catch (error: any) {
+        outputChannel.appendLine(`[n8n] Could not resolve trigger test plan for workflow ${workflow.id}: ${error?.message || error}`);
+        return undefined;
     }
 }
 
@@ -891,31 +916,36 @@ async function resolveWorkflowForSplitView(arg: any): Promise<IWorkflowStatus | 
 
 async function openAgentWorkbench(context: vscode.ExtensionContext, workflow?: IWorkflowStatus, initialSessionId?: string): Promise<void> {
     try {
-        const openTarget = workflow?.id ? await resolveWorkflowWebviewTarget(workflow) : undefined;
         const workflowFilePath = workflow ? getExistingWorkflowFileUri(workflow)?.fsPath : undefined;
+        const webviewContext = workflow?.id ? await resolveWorkflowWebviewContext(workflow, workflowFilePath) : undefined;
         const providerModelLabel = getSelectedAgentProviderModelLabel();
         AgentWorkbenchWebview.createOrShow(
             context,
-            workflow,
-            workflowFilePath,
-            openTarget?.url,
-            openTarget?.targetUrl,
+            webviewContext?.workflow || workflow,
+            webviewContext?.workflowFilePath || workflowFilePath,
+            webviewContext?.workflowUrl,
+            webviewContext?.workflowReloadUrl,
+            webviewContext?.endpoints,
             providerModelLabel,
             requireAgentRuntimeController(),
             outputChannel,
             {
                 listWorkflows: listAgentWorkflowOptions,
+                listWorkflowOptions: listAgentWorkflowContextOptions,
                 resolveWorkflow: resolveAgentWorkflowTarget,
                 listWorkflowNodes: listAgentWorkflowNodes,
                 listProviderOptions: listAgentProviderOptions,
                 listModelOptions: listAgentModelOptions,
                 selectProviderModel: selectAgentProviderModel,
                 selectReasoningEffort: selectInlineAgentReasoningEffort,
+                listWorktrees: listWorktreeOptions,
+                createWorktree: createAgentWorktree,
+                removeWorktree: removeAgentWorktree,
             },
             initialSessionId,
             vscode.ViewColumn.One,
         );
-        if (openTarget?.url) {
+        if (webviewContext?.workflowUrl) {
             registerClipboardHandler();
         }
     } catch (e: any) {
@@ -934,6 +964,14 @@ async function getOrCreateAgentSessionForWorkflow(workflow: IWorkflowStatus): Pr
     const runtime = requireAgentRuntimeController();
     const existingSessionId = await runtime.getLatestSessionIdForWorkflow(workflowContext);
     if (existingSessionId) return existingSessionId;
+    const currentSessionId = await runtime.attachSessionToWorkflowIfUnattached(AgentWorkbenchWebview.getCurrentActiveSessionId(), workflowContext, {
+        workflowId: workflow.id || undefined,
+        workflowName: workflow.name,
+        workflowFilename: workflow.filename,
+        workflowFilePath,
+        workspaceRoot: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
+    });
+    if (currentSessionId) return currentSessionId;
     return runtime.createSessionForWorkflow(workflowContext, {
         workflowId: workflow.id || undefined,
         workflowName: workflow.name,
@@ -953,8 +991,24 @@ async function listAgentWorkflowOptions(): Promise<IWorkflowStatus[]> {
     return selectAllWorkflows(store.getState());
 }
 
-async function resolveAgentWorkflowTarget(workflowContext: AgentWorkflowContext): Promise<{ workflow?: IWorkflowStatus; workflowFilePath?: string; workflowUrl?: string; workflowReloadUrl?: string }> {
-    const workflows = await listAgentWorkflowOptions();
+async function listAgentWorkflowContextOptions(): Promise<AgentWorkflowContext[]> {
+    const workflows = selectAllWorkflows(store.getState());
+    // This transient menu path may refresh through cli.list, but it must not
+    // dispatch into the global store: listAgentWorkflowOptions owns that stateful
+    // refresh, and keeping this side-effect-free avoids extra webview churn.
+    const source = cli
+        ? await cli.list({ includeArchived: true }).catch(() => workflows)
+        : workflows;
+    return source.map((workflow) => ({
+        id: workflow.id || undefined,
+        name: workflow.name || workflow.id || workflow.filename || 'Workflow',
+        filename: workflow.filename || undefined,
+        filePath: getExistingWorkflowFileUri(workflow)?.fsPath,
+    }));
+}
+
+async function resolveAgentWorkflowTarget(workflowContext: AgentWorkflowContext): Promise<{ workflow?: IWorkflowStatus; workflowFilePath?: string; workflowUrl?: string; workflowReloadUrl?: string; workflowEndpoints?: WorkflowWebviewContext['endpoints'] }> {
+    const workflows = selectAllWorkflows(store.getState());
     const workflow = workflows.find((candidate) => (
         Boolean(workflowContext.id && candidate.id === workflowContext.id)
         || Boolean(workflowContext.filename && candidate.filename === workflowContext.filename)
@@ -970,12 +1024,13 @@ async function resolveAgentWorkflowTarget(workflowContext: AgentWorkflowContext)
         return { workflow: effectiveWorkflow, workflowFilePath };
     }
     try {
-        const openTarget = await resolveWorkflowWebviewTarget(effectiveWorkflow);
+        const webviewContext = await resolveWorkflowWebviewContext(effectiveWorkflow, workflowFilePath);
         return {
-            workflow: effectiveWorkflow,
-            workflowFilePath,
-            workflowUrl: openTarget.url,
-            workflowReloadUrl: openTarget.targetUrl,
+            workflow: webviewContext.workflow,
+            workflowFilePath: webviewContext.workflowFilePath,
+            workflowUrl: webviewContext.workflowUrl,
+            workflowReloadUrl: webviewContext.workflowReloadUrl,
+            workflowEndpoints: webviewContext.endpoints,
         };
     } catch {
         return { workflow: effectiveWorkflow, workflowFilePath };
@@ -1001,7 +1056,7 @@ async function listAgentWorkflowNodes(workflowContext: AgentWorkflowContext): Pr
 }
 
 async function listAgentProviderOptions(): Promise<Array<Record<string, unknown>>> {
-    const states = await requireYagrProviderService().listProviderConnectionStates();
+    const states = await requireAgentProviderService().listProviderConnectionStates();
     return states.filter((state) => state.connected || state.selected).map((state) => ({
         id: state.id,
         label: state.label,
@@ -1015,12 +1070,15 @@ async function listAgentProviderOptions(): Promise<Array<Record<string, unknown>
 }
 
 async function listAgentModelOptions(providerId: string): Promise<Array<Record<string, unknown>>> {
-    const provider = normalizeYagrProviderId(providerId) || 'openai';
-    const definition = YAGR_PROVIDER_DEFINITIONS[provider];
-    const config = vscode.workspace.getConfiguration('n8n.agent');
-    const selectedProvider = normalizeYagrProviderId(String(config.get<string>('provider') || 'openai')) || 'openai';
-    const currentModel = String(config.get<string>('model') || '').trim() || definition.defaultModel;
-    const liveModels = await requireYagrProviderService().fetchAvailableModels(provider).catch(() => []);
+    const provider = normalizeAgentProviderId(providerId) || 'openai';
+    const definition = AGENT_PROVIDER_DEFINITIONS[provider];
+    const settings = readAgentProviderSettings(contextGlobalState());
+    const selectedProvider = settings.provider;
+    const selectedModel = settings.model || '';
+    const currentModel = provider === selectedProvider
+        ? (selectedModel || definition.defaultModel)
+        : definition.defaultModel;
+    const liveModels = await requireAgentProviderService().fetchAvailableModels(provider).catch(() => []);
     return [...new Set([...(liveModels.length ? liveModels : []), definition.defaultModel, currentModel].filter(Boolean))]
         .map((model) => ({
             id: model,
@@ -1033,32 +1091,76 @@ async function listAgentModelOptions(providerId: string): Promise<Array<Record<s
 }
 
 async function selectAgentProviderModel(providerId: string, model: string): Promise<void> {
-    const provider = normalizeYagrProviderId(providerId) || 'openai';
-    const trimmedModel = model.trim() || YAGR_PROVIDER_DEFINITIONS[provider].defaultModel;
-    const config = vscode.workspace.getConfiguration('n8n.agent');
-    await config.update('provider', provider, vscode.ConfigurationTarget.Global);
-    await config.update('model', trimmedModel, vscode.ConfigurationTarget.Global);
-    await requireYagrProviderService().syncReasoningEffortConfiguration(provider, trimmedModel);
+    const provider = normalizeAgentProviderId(providerId) || 'openai';
+    const trimmedModel = model.trim() || AGENT_PROVIDER_DEFINITIONS[provider].defaultModel;
+    await updateAgentProviderSettings(contextGlobalState(), { provider, model: trimmedModel });
+    await requireAgentProviderService().syncReasoningEffortConfiguration(provider, trimmedModel);
 }
 
 async function selectInlineAgentReasoningEffort(effort: string): Promise<void> {
-    const normalized = YAGR_REASONING_EFFORTS.includes(effort as YagrReasoningEffort) ? effort as YagrReasoningEffort : undefined;
+    const normalized = AGENT_REASONING_EFFORTS.includes(effort as AgentProviderReasoningEffort) ? effort as AgentProviderReasoningEffort : undefined;
     if (!normalized) return;
-    const config = vscode.workspace.getConfiguration('n8n.agent');
-    const provider = normalizeYagrProviderId(String(config.get<string>('provider') || 'openai')) || 'openai';
-    const model = String(config.get<string>('model') || '').trim() || undefined;
+    const settings = readAgentProviderSettings(contextGlobalState());
+    const provider = settings.provider;
+    const model = settings.model;
     if (!providerSupportsReasoningEffort(provider, model)) {
-        await config.update('reasoningEffort', undefined, vscode.ConfigurationTarget.Global);
+        await updateAgentProviderSettings(contextGlobalState(), { reasoningEffort: undefined });
         return;
     }
-    await config.update('reasoningEffort', normalized, vscode.ConfigurationTarget.Global);
+    await updateAgentProviderSettings(contextGlobalState(), { reasoningEffort: normalized });
 }
 
 function getSelectedAgentProviderModelLabel(): string {
-    const config = vscode.workspace.getConfiguration('n8n.agent');
-    const provider = String(config.get<string>('provider') || 'openai').trim() || 'openai';
-    const model = String(config.get<string>('model') || '').trim();
+    const settings = readAgentProviderSettings(contextGlobalState());
+    const provider = settings.provider;
+    const model = settings.model || '';
     return model ? `${provider} / ${model}` : provider;
+}
+
+function contextGlobalState(): vscode.Memento {
+    if (!extensionContextForAgentSettings) {
+        throw new Error('Extension context is not initialized.');
+    }
+    return extensionContextForAgentSettings.globalState;
+}
+
+function getWorktreeService(): WorktreeService | undefined {
+    const workspaceRoot = getWorkspaceRoot();
+    if (!workspaceRoot) return undefined;
+    const expectedRoot = path.resolve(workspaceRoot, '.n8nac', 'worktrees');
+    if (!worktreeService || path.resolve(worktreeService.getWorktreesRoot()) !== expectedRoot) {
+        worktreeService = new WorktreeService(workspaceRoot, (message) => {
+            outputChannel.appendLine(message);
+        });
+    }
+    return worktreeService;
+}
+
+async function listWorktreeOptions(): Promise<WorktreeInfo[]> {
+    const workspaceRoot = getWorkspaceRoot();
+    if (!workspaceRoot) return [];
+    const service = getWorktreeService();
+    if (!service) return [];
+    return service.listWorktrees(workspaceRoot);
+}
+
+async function createAgentWorktree(options?: { branchName?: string }): Promise<WorktreeInfo | undefined> {
+    const workspaceRoot = getWorkspaceRoot();
+    if (!workspaceRoot) throw new Error('No workspace root available.');
+    const service = getWorktreeService();
+    if (!service) throw new Error('Worktree service unavailable.');
+    return service.createWorktree(workspaceRoot, {
+        branchName: options?.branchName,
+        baseBranch: 'HEAD',
+    });
+}
+
+async function removeAgentWorktree(worktreePath: string): Promise<void> {
+    const workspaceRoot = getWorkspaceRoot();
+    if (!workspaceRoot) throw new Error('No workspace root available.');
+    const service = getWorktreeService();
+    if (!service) throw new Error('Worktree service unavailable.');
+    await service.removeWorktree(workspaceRoot, worktreePath);
 }
 
 async function resolveWorkflowWebviewTarget(workflow: IWorkflowStatus): Promise<{ url: string; targetUrl: string }> {
@@ -1215,37 +1317,13 @@ function updateContextKeys() {
     vscode.commands.executeCommand('setContext', 'n8n.initialized', state === ExtensionState.INITIALIZED);
 }
 
-function requireConfigurationController(): N8nConfigurationController {
-    if (!configurationController) {
-        throw new Error('n8n configuration controller is not initialized.');
-    }
+function getOrCreateConfigurationController(): N8nConfigurationController {
+    configurationController ??= new N8nConfigurationController(outputChannel);
     return configurationController;
 }
 
-async function migrateWorkspaceConfiguration(context: vscode.ExtensionContext): Promise<void> {
-    const workspaceRoot = getWorkspaceRoot();
-    if (!workspaceRoot) {
-        vscode.window.showWarningMessage(NO_WORKSPACE_ERROR_MESSAGE, OPEN_FOLDER_ACTION).then((selection) => {
-            if (selection === OPEN_FOLDER_ACTION) void vscode.commands.executeCommand('vscode.openFolder');
-        });
-        return;
-    }
-
-    const result = await runWorkspaceMigrationFromVscode(context, workspaceRoot);
-    if (result.outcome === 'not-needed') {
-        await vscode.window.showInformationMessage('No migration required.');
-        await requireConfigurationController().refresh('migration-not-needed', { force: true });
-        return;
-    }
-    if (result.outcome === 'cancelled') return;
-
-    await requireConfigurationController().refresh('migrate-workspace-configuration-command', { force: true });
-    await determineInitialState(context);
-    updateContextKeys();
-    const backupPath = result.report.backupPath || '';
-    const migratedEnvironmentCount = result.report.migratedEnvironmentIds?.length || 0;
-    const suffix = backupPath ? ` Backup: ${backupPath}` : migratedEnvironmentCount ? ` ${migratedEnvironmentCount} environment${migratedEnvironmentCount === 1 ? '' : 's'} created.` : '';
-    await vscode.window.showInformationMessage(`Migration complete.${suffix}`);
+function requireConfigurationController(): N8nConfigurationController {
+    return getOrCreateConfigurationController();
 }
 
 function requireAgentRuntimeController(): AgentRuntimeController {
@@ -1255,11 +1333,11 @@ function requireAgentRuntimeController(): AgentRuntimeController {
     return agentRuntimeController;
 }
 
-function requireYagrProviderService(): YagrProviderService {
-    if (!yagrProviderService) {
-        throw new Error('n8n Yagr provider service is not initialized.');
+function requireAgentProviderService(): AgentProviderService {
+    if (!agentProviderService) {
+        throw new Error('n8n agent provider service is not initialized.');
     }
-    return yagrProviderService;
+    return agentProviderService;
 }
 
 async function setAgentProviderApiKey(context: vscode.ExtensionContext): Promise<void> {
@@ -1267,17 +1345,16 @@ async function setAgentProviderApiKey(context: vscode.ExtensionContext): Promise
 }
 
 async function setupAgentProvider(context: vscode.ExtensionContext): Promise<void> {
-    const service = requireYagrProviderService();
-    const config = vscode.workspace.getConfiguration('n8n.agent');
-    const currentProvider = normalizeYagrProviderId(String(config.get<string>('provider') || 'openai')) || 'openai';
+    const service = requireAgentProviderService();
+    const currentProvider = readAgentProviderSettings(context.globalState).provider;
     const picked = await vscode.window.showQuickPick(
-        YAGR_SELECTABLE_PROVIDERS.map((provider) => ({
+        AGENT_SELECTABLE_PROVIDERS.map((provider) => ({
             provider,
-            label: YAGR_PROVIDER_DEFINITIONS[provider].label,
-            description: YAGR_PROVIDER_DEFINITIONS[provider].description,
-            detail: YAGR_PROVIDER_DEFINITIONS[provider].authKind === 'oauth-device'
+            label: AGENT_PROVIDER_DEFINITIONS[provider].label,
+            description: AGENT_PROVIDER_DEFINITIONS[provider].description,
+            detail: AGENT_PROVIDER_DEFINITIONS[provider].authKind === 'oauth-device'
                 ? 'OAuth device flow'
-                : YAGR_PROVIDER_DEFINITIONS[provider].requiresApiKey
+                : AGENT_PROVIDER_DEFINITIONS[provider].requiresApiKey
                     ? 'API key'
                     : 'Account credential',
             picked: provider === currentProvider,
@@ -1294,9 +1371,9 @@ async function setupAgentProvider(context: vscode.ExtensionContext): Promise<voi
     }
 
     try {
-        const configured = await service.setupProvider(picked.provider as YagrModelProvider);
+        const configured = await service.setupProvider(picked.provider as AgentModelProvider);
         if (!configured) return;
-        await service.selectModel(picked.provider as YagrModelProvider);
+        await service.selectModel(picked.provider as AgentModelProvider);
         vscode.window.showInformationMessage(`Configured n8n Agent provider: ${picked.label}.`);
     } catch (error: any) {
         vscode.window.showErrorMessage(`Provider setup failed: ${error?.message || String(error)}`);
@@ -1304,14 +1381,13 @@ async function setupAgentProvider(context: vscode.ExtensionContext): Promise<voi
 }
 
 async function selectAgentModel(): Promise<void> {
-    const service = requireYagrProviderService();
-    const config = vscode.workspace.getConfiguration('n8n.agent');
-    const currentProvider = normalizeYagrProviderId(String(config.get<string>('provider') || 'openai')) || 'openai';
+    const service = requireAgentProviderService();
+    const currentProvider = readAgentProviderSettings(contextGlobalState()).provider;
     const pickedProvider = await vscode.window.showQuickPick(
-        YAGR_SELECTABLE_PROVIDERS.map((provider) => ({
+        AGENT_SELECTABLE_PROVIDERS.map((provider) => ({
             provider,
-            label: YAGR_PROVIDER_DEFINITIONS[provider].label,
-            description: YAGR_PROVIDER_DEFINITIONS[provider].description,
+            label: AGENT_PROVIDER_DEFINITIONS[provider].label,
+            description: AGENT_PROVIDER_DEFINITIONS[provider].description,
             picked: provider === currentProvider,
         })),
         {
@@ -1321,9 +1397,9 @@ async function selectAgentModel(): Promise<void> {
         },
     );
     if (!pickedProvider) return;
-    const provider = pickedProvider.provider as YagrModelProvider;
+    const provider = pickedProvider.provider as AgentModelProvider;
     try {
-        await config.update('provider', provider, vscode.ConfigurationTarget.Global);
+        await updateAgentProviderSettings(contextGlobalState(), { provider });
         await service.selectModel(provider);
     } catch (error: any) {
         vscode.window.showErrorMessage(`Model selection failed: ${error?.message || String(error)}`);
@@ -1331,10 +1407,10 @@ async function selectAgentModel(): Promise<void> {
 }
 
 async function selectAgentReasoningEffort(): Promise<void> {
-    const service = requireYagrProviderService();
-    const config = vscode.workspace.getConfiguration('n8n.agent');
-    const provider = normalizeYagrProviderId(String(config.get<string>('provider') || 'openai')) || 'openai';
-    const model = String(config.get<string>('model') || '').trim() || undefined;
+    const service = requireAgentProviderService();
+    const settings = readAgentProviderSettings(contextGlobalState());
+    const provider = settings.provider;
+    const model = settings.model;
     try {
         await service.selectReasoningEffort(provider, model);
     } catch (error: any) {
@@ -1447,13 +1523,13 @@ function toInstanceQuickPickItem(
 }
 
 function toEnvironmentQuickPickItem(
-    environment: { id: string; name: string; environmentTargetId: string; projectName?: string; syncFolder?: string },
+    environment: { id: string; name: string; environmentTargetId: string; projectName?: string; workflowsPath?: string; workflowDir?: string; syncFolder?: string },
     activeEnvironmentId?: string,
 ): EnvironmentQuickPickItem {
     return {
         label: environment.name,
         description: environment.projectName || environment.environmentTargetId,
-        detail: environment.syncFolder || (environment.id === activeEnvironmentId ? 'Currently active' : ''),
+        detail: environment.workflowsPath || environment.workflowDir || environment.syncFolder || (environment.id === activeEnvironmentId ? 'Currently active' : ''),
         picked: environment.id === activeEnvironmentId,
         environmentId: environment.id,
     };
@@ -1785,6 +1861,7 @@ function resetExtensionRuntimeState(): void {
     syncManager = undefined;
     cli = undefined;
     conflictStore.clear();
+    syncEventJournalSignatures.clear();
     enhancedTreeProvider.setSyncManager(undefined);
     clearSyncManager();
     store.dispatch(setWorkflows([]));
@@ -2240,7 +2317,7 @@ async function updateAiContextAfterSyncInitialization(
 ): Promise<void> {
     const currentVersion = versionHint || await resolveAiContextVersion(context, client, undefined, true);
     try {
-        await ensureAiContextFresh(context, 'sync-initialized', { force: true, versionHint: currentVersion });
+        await ensureAiContextFresh(context, 'sync-initialized', { versionHint: currentVersion });
     } catch (error: any) {
         outputChannel.appendLine(`[n8n] Failed to auto-generate AI context: ${error.message}`);
     }
@@ -2274,14 +2351,15 @@ async function initializeSyncManager(context: vscode.ExtensionContext) {
         activeInstanceId: environment?.activeInstanceId || effective?.activeInstanceId || '',
         host: environment?.host || effective?.apiBaseUrl || effective?.host || '',
         apiKey: environment?.apiKey || effective?.apiKey || '',
-        syncFolder: environment?.syncFolder || effective?.syncFolder || 'workflows',
-        workflowDir: environment?.workflowDir || (effective as any)?.workflowDir || '',
+        workflowsPath: environment?.workflowsPath || environment?.workflowDir || (effective as any)?.workflowsPath || (effective as any)?.workflowDir || '',
+        syncFolder: environment?.workflowsPath || environment?.workflowDir || (effective as any)?.workflowsPath || (effective as any)?.workflowDir || effective?.syncFolder || 'workflows',
+        workflowDir: environment?.workflowsPath || environment?.workflowDir || (effective as any)?.workflowsPath || (effective as any)?.workflowDir || '',
         projectId: environment?.projectId || effective?.projectId || '',
         projectName: environment?.projectName || effective?.projectName || '',
     };
 
     const { host, apiKey } = resolvedConfig;
-    const folder = resolvedConfig.syncFolder || 'workflows';
+    const folder = resolvedConfig.workflowsPath || resolvedConfig.workflowDir || resolvedConfig.syncFolder || 'workflows';
     let projectId = resolvedConfig.projectId || undefined;
     let projectName = resolvedConfig.projectName || undefined;
     if (!host || !apiKey) throw new Error('Host/API Key missing. Please configure n8n.');
@@ -2353,6 +2431,7 @@ async function initializeSyncManager(context: vscode.ExtensionContext) {
     // Create SyncManager (the stateful engine: WorkflowStateTracker, events, etc.)
     syncManager = new SyncManager(client, {
         directory: absDirectory,
+        workflowsPath: absWorkflowDirectory,
         workflowDir: absWorkflowDirectory,
         syncInactive: true,
         ignoredTags: [],

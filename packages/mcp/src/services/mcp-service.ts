@@ -4,9 +4,19 @@ import { dirname, join } from 'path';
 import { tmpdir } from 'os';
 import { createRequire } from 'module';
 import { fileURLToPath } from 'url';
+import { NativeMcpHttpClient } from './native-mcp-client.js';
+import { loadNativeMcpConfig, redactNativeMcpConfig, type NativeMcpConfig, type NativeMcpWorkspaceConfigInput } from './native-mcp-config.js';
+import {
+    buildNativeMcpCapabilities,
+    missingNativeMcpTools,
+    summarizeNativeMcpTools,
+    type NativeMcpToolSummary,
+} from './native-mcp-tools.js';
 
 export interface N8nAsCodeMcpServiceOptions {
     cwd?: string;
+    nativeMcpEnv?: NodeJS.ProcessEnv;
+    nativeMcpWorkspace?: NativeMcpWorkspaceConfigInput;
 }
 
 export interface ValidateWorkflowOptions {
@@ -41,9 +51,84 @@ function detectWorkflowFormat(workflowContent: string, format: 'auto' | 'json' |
 
 export class N8nAsCodeMcpService {
     readonly cwd: string;
+    private readonly nativeMcpConfig: NativeMcpConfig;
 
     constructor(options: N8nAsCodeMcpServiceOptions = {}) {
         this.cwd = options.cwd || process.cwd();
+        this.nativeMcpConfig = loadNativeMcpConfig(options.nativeMcpEnv, {
+            cwd: this.cwd,
+            environmentNameOrId: options.nativeMcpEnv?.N8NAC_ENVIRONMENT,
+            workspace: options.nativeMcpWorkspace,
+        });
+    }
+
+    isNativeMcpEnabled(): boolean {
+        return this.nativeMcpConfig.enabled;
+    }
+
+    isNativeMcpConfigured(): boolean {
+        return this.nativeMcpConfig.enabled && Boolean(this.nativeMcpConfig.endpoint);
+    }
+
+    canExposeNativeMcpRemotely(): boolean {
+        return this.nativeMcpConfig.allowRemoteExposure;
+    }
+
+    allowsNativeMcpExecutionData(): boolean {
+        return this.nativeMcpConfig.allowExecutionData;
+    }
+
+    async getNativeMcpStatus(options: { includeTools?: boolean } = {}) {
+        const config = redactNativeMcpConfig(this.nativeMcpConfig);
+        const status: {
+            config: ReturnType<typeof redactNativeMcpConfig>;
+            connection: {
+                checked: boolean;
+                ok?: boolean;
+                error?: string;
+            };
+            tools?: {
+                count: number;
+                names: string[];
+                missingReadOnlyTools: string[];
+            };
+            capabilities?: ReturnType<typeof buildNativeMcpCapabilities>;
+        } = {
+            config,
+            connection: { checked: false },
+        };
+
+        if (!this.nativeMcpConfig.enabled) {
+            status.connection.error = 'Native n8n MCP assist is disabled. Configure it for the active n8nac environment with `n8nac native-mcp configure`, or set N8NAC_NATIVE_MCP_ENABLED=1.';
+            return status;
+        }
+
+        if (!this.nativeMcpConfig.endpoint) {
+            status.connection.error = 'Native n8n MCP endpoint is not configured. Set it with `n8nac native-mcp configure --url <url>`, or set N8N_NATIVE_MCP_URL or N8NAC_NATIVE_MCP_URL.';
+            return status;
+        }
+
+        if (!options.includeTools) {
+            return status;
+        }
+
+        status.connection.checked = true;
+
+        try {
+            const tools = await this.listNativeMcpTools();
+            status.connection.ok = true;
+            status.tools = {
+                count: tools.length,
+                names: tools.map((tool) => tool.name),
+                missingReadOnlyTools: missingNativeMcpTools(tools),
+            };
+            status.capabilities = buildNativeMcpCapabilities(tools);
+        } catch (error: any) {
+            status.connection.ok = false;
+            status.connection.error = error?.message || String(error);
+        }
+
+        return status;
     }
 
     private getCliEntryPath(): string {
@@ -128,6 +213,25 @@ export class N8nAsCodeMcpService {
         }
 
         throw new Error(`CLI command did not return valid JSON: ${args.join(' ')}`);
+    }
+
+    private createNativeMcpClient(): NativeMcpHttpClient {
+        if (!this.nativeMcpConfig.enabled) {
+            throw new Error('Native n8n MCP assist is disabled. Configure it for the active n8nac environment with `n8nac native-mcp configure`, or set N8NAC_NATIVE_MCP_ENABLED=1.');
+        }
+        if (!this.nativeMcpConfig.endpoint) {
+            throw new Error('Native n8n MCP endpoint is not configured. Set it with `n8nac native-mcp configure --url <url>`, or set N8N_NATIVE_MCP_URL or N8NAC_NATIVE_MCP_URL.');
+        }
+        return new NativeMcpHttpClient(this.nativeMcpConfig);
+    }
+
+    async listNativeMcpTools(): Promise<NativeMcpToolSummary[]> {
+        const result = await this.createNativeMcpClient().listTools();
+        return summarizeNativeMcpTools(result.tools);
+    }
+
+    async callNativeMcpTool(toolName: string, args: Record<string, unknown> = {}): Promise<unknown> {
+        return this.createNativeMcpClient().callTool(toolName, args);
     }
 
     searchKnowledge(query: string, options: { category?: string; type?: 'node' | 'documentation'; limit?: number } = {}) {

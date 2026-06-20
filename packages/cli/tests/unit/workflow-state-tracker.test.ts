@@ -168,4 +168,87 @@ export class RecoveredWorkflow {
         expect(tracker.getWorkflowIdForFilename('recovered.workflow.ts')).toBe('wf-123');
         expect(tracker.getFilenameForId('wf-123')).toBe('recovered.workflow.ts');
     });
+
+    it('does not recover a persisted workflow ID when the decorator explicitly sets id undefined', async () => {
+        tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'n8nac-tracker-'));
+        fs.writeFileSync(
+            path.join(tempDir, 'new-copy.workflow.ts'),
+            `import { workflow, node } from '@n8n-as-code/transformer';
+
+@workflow({
+  id: undefined,
+  name: 'New Copy',
+  active: false
+})
+export class NewCopyWorkflow {
+  @node({
+    name: 'Webhook',
+    type: 'n8n-nodes-base.webhook',
+    version: 2.1,
+    position: [0, 0]
+  })
+  Webhook = { path: 'new-copy', httpMethod: 'POST' };
+}
+`,
+            'utf-8',
+        );
+        fs.writeFileSync(
+            path.join(tempDir, '.n8n-state.json'),
+            JSON.stringify({
+                workflows: {
+                    'stale-wf': {
+                        lastSyncedHash: 'abc123',
+                        lastSyncedAt: '2026-03-30T12:00:00.000Z',
+                        filename: 'new-copy.workflow.ts',
+                    },
+                },
+            }),
+            'utf-8',
+        );
+
+        const tracker = new WorkflowStateTracker({} as any, {
+            directory: tempDir,
+            syncInactive: false,
+            ignoredTags: [],
+            projectId: 'test-project',
+        });
+
+        expect(tracker.getWorkflowIdForFilename('new-copy.workflow.ts')).toBe('stale-wf');
+
+        await tracker.refreshLocalState();
+
+        expect(tracker.getWorkflowIdForFilename('new-copy.workflow.ts')).toBeUndefined();
+        expect(tracker.getFilenameForId('stale-wf')).toBeUndefined();
+    });
+
+    it('extracts the workflow id key without matching id text inside decorator string values', async () => {
+        const tracker = createTracker();
+
+        fs.writeFileSync(
+            path.join(tempDir!, 'order-id.workflow.ts'),
+            `import { workflow, node } from '@n8n-as-code/transformer';
+
+@workflow({
+  name: 'Order id: x',
+  id: 'real-id',
+  active: false
+})
+export class OrderIdWorkflow {
+  @node({
+    name: 'Webhook',
+    type: 'n8n-nodes-base.webhook',
+    version: 2.1,
+    position: [0, 0]
+  })
+  Webhook = { path: 'order-id', httpMethod: 'POST' };
+}
+`,
+            'utf-8',
+        );
+
+        await tracker.refreshLocalState();
+
+        expect(tracker.getWorkflowIdForFilename('order-id.workflow.ts')).toBe('real-id');
+        expect(tracker.getFilenameForId('real-id')).toBe('order-id.workflow.ts');
+    });
 });

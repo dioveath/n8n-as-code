@@ -13,9 +13,8 @@ Use this page when you need to choose the right command family.
 | Need | Use |
 |---|---|
 | Configure how this repository connects to n8n | `n8nac env` |
-| Inspect readiness or migrate workspace config | `n8nac workspace` |
+| Inspect workspace snapshots | `n8nac workspace` |
 | Create, start, stop, or tunnel a local managed instance | `n8n-manager` |
-| Maintain old scripts only | compat hidden commands |
 
 ## Primary Usage
 
@@ -24,8 +23,8 @@ Use this page when you need to choose the right command family.
 ```bash
 n8nac env list
 n8nac env status
-n8nac env add <name> --base-url <url> --sync-folder <path>
-n8nac env add <name> --managed-instance <id> --sync-folder <path>
+n8nac env add <name> --base-url <url> --workflows-path <path>
+n8nac env add <name> --managed-instance <id> --workflows-path <path>
 n8nac env use <environment>
 n8nac env auth set <environment> --api-key-stdin
 n8nac env remove <environment>
@@ -36,20 +35,17 @@ Use it for:
 - remote n8n URLs
 - local API-key binding for remote environments
 - managed local instance references
-- project and sync-folder context
+- project and workflowsPath context
 - active environment selection
 
 ## Workspace Maintenance
 
-`n8nac workspace` is for readiness and unified workspace migration.
+`n8nac workspace` inspects the V4 workspace snapshot. Use `env status` for effective runtime readiness.
 
 ```bash
-n8nac workspace status
-n8nac workspace migrate --json
-n8nac workspace migrate --write
+n8nac workspace status --json
+n8nac env status --json
 ```
-
-Use `migrate --json` as the dry-run for legacy config models. It reports one `operations` list and `migrate --write` applies all required migration operations together.
 
 ## Managed Local Instances
 
@@ -75,9 +71,13 @@ After an environment exists, normal workflow operations stay in `n8nac`:
 n8nac list
 n8nac pull <workflow-id>
 n8nac push <path-to-workflow.workflow.ts> --verify
+n8nac promote <path-to-workflow.workflow.ts> --from Dev --to Prod
+n8nac promote --from Dev --to Prod --dry-run
 n8nac resolve <workflow-id> --mode keep-current
 n8nac resolve <workflow-id> --mode keep-incoming
 ```
+
+Use `promote` to move workflow source between workspace environments. The path is optional: pass one workflow file for a targeted promotion, or omit it to recursively promote every `*.workflow.ts` file in the source environment `workflowsPath`. Promotion remaps target project metadata, credentials, and supported Execute Workflow references, saves stable bindings in `n8nac-promotion.json`, and pushes by default unless `--no-push` is used.
 
 ## AI Context And Skills
 
@@ -88,18 +88,4 @@ n8nac skills node-info googleSheets
 n8nac skills validate workflows/dev/my-workflow.workflow.ts
 ```
 
-## Hidden Compatibility
-
-These commands may remain callable for old scripts, but they are not first-level user flows:
-
-```bash
-n8nac instance-target ...
-n8nac target ...
-n8nac setup ...
-n8nac setup-modes ...
-n8nac workspace pin-instance ...
-n8nac workspace set-sync-folder ...
-n8nac workspace set-project ...
-```
-
-Prefer `n8nac env` for all new workspace configuration.
+Prefer `n8nac env` for all workspace configuration.
