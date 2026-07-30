@@ -49,5 +49,5 @@
     "publishConfig": {
         "access": "public"
     },
-    "n8nVersion": "2.32.5"
+    "n8nVersion": "2.32.6"
 }
